@@ -110,7 +110,7 @@ fn run_overlay(
         fn gui_run(
             &mut self,
             egui_context: &egui::Context,
-            _default_gfx_backend: &mut egui_overlay::egui_render_three_d::ThreeDBackend,
+            default_gfx_backend: &mut egui_overlay::egui_render_three_d::ThreeDBackend,
             glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
         ) {
             if self.quit_flag.load(Ordering::Relaxed) {
@@ -122,6 +122,17 @@ fn run_overlay(
                 self.initialized = true;
                 init_window(glfw_backend);
             }
+
+            unsafe {
+                use egui_overlay::egui_render_three_d::glow::HasContext;
+                default_gfx_backend
+                    .glow_backend
+                    .glow_context
+                    .clear_color(0.0, 0.0, 0.0, 0.0);
+            }
+
+            // This overlay is always visual-only, so keep the entire window fully click-through.
+            glfw_backend.set_passthrough(true);
 
             let hotkey_active = self.key_held.load(Ordering::Relaxed);
 
@@ -137,7 +148,7 @@ fn run_overlay(
                 }
             }
 
-            egui_context.request_repaint_after(std::time::Duration::from_millis(100));
+            egui_context.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 
@@ -158,11 +169,10 @@ fn init_window(
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-        // Resize window to cover the full primary monitor
         let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
         let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         glfw_backend.window.set_pos(0, 0);
-        glfw_backend.window.set_size(screen_w, screen_h);
+        glfw_backend.set_window_size([screen_w as f32, screen_h as f32]);
 
         let hwnd = glfw_backend.window.get_win32_window();
         if !hwnd.is_null() {
@@ -171,7 +181,10 @@ fn init_window(
                 SetWindowLongPtrW(
                     hwnd,
                     GWL_EXSTYLE,
-                    (ex_style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize),
+                    (ex_style
+                        | WS_EX_TOOLWINDOW as isize
+                        | WS_EX_TRANSPARENT as isize)
+                        & !(WS_EX_APPWINDOW as isize),
                 );
 
                 SetWindowPos(
@@ -179,9 +192,9 @@ fn init_window(
                     HWND_TOPMOST,
                     0,
                     0,
-                    screen_w,
-                    screen_h,
-                    SWP_FRAMECHANGED | SWP_NOACTIVATE,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
             }
         }
@@ -193,8 +206,5 @@ fn init_window(
         );
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = glfw_backend;
-    }
+    glfw_backend.set_passthrough(true);
 }
