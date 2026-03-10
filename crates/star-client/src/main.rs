@@ -73,9 +73,12 @@ fn main() {
                 riot_auth.shard
             );
 
-            let api = Arc::new(RwLock::new(
-                RiotApiClient::new(riot_auth.clone()).expect("API client"),
-            ));
+            let mut api_client =
+                RiotApiClient::new(riot_auth.clone()).expect("API client");
+            if let Err(e) = api_client.fetch_client_version().await {
+                tracing::warn!("Could not fetch client version: {}", e);
+            }
+            let api = Arc::new(RwLock::new(api_client));
 
             let star_client = Arc::new(StarClient::new(&config_bg.star.backend_url));
             if config_bg.star.enabled {

@@ -371,6 +371,14 @@ pub struct ValorantApiResponse<T> {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VersionData {
+    pub riot_client_version: Option<String>,
+    pub build_version: Option<String>,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentData {
     pub uuid: String,
     pub display_name: String,

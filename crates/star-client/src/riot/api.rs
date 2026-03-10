@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub struct RiotApiClient {
     http: reqwest::Client,
     auth: RiotAuth,
+    client_version: String,
     content_cache: Option<ContentResponse>,
     agent_cache: HashMap<String, AgentData>,
     skin_cache: HashMap<String, WeaponSkinLevelData>,
@@ -20,6 +21,7 @@ impl RiotApiClient {
         Ok(Self {
             http,
             auth,
+            client_version: String::new(),
             content_cache: None,
             agent_cache: HashMap::new(),
             skin_cache: HashMap::new(),
@@ -52,12 +54,12 @@ impl RiotApiClient {
                 .parse()
                 .unwrap(),
         );
-        headers.insert(
-            "X-Riot-ClientVersion",
-            "release-09.09-shipping-20-2602983"
-                .parse()
-                .unwrap(),
-        );
+        if !self.client_version.is_empty() {
+            headers.insert(
+                "X-Riot-ClientVersion",
+                self.client_version.parse().unwrap(),
+            );
+        }
         headers
     }
 
@@ -110,20 +112,40 @@ impl RiotApiClient {
 
     pub async fn get_mmr(&self, puuid: &str) -> Result<MmrResponse> {
         let url = endpoints::mmr(&self.auth, puuid);
-        let resp_text = self
+        let response = self
             .http
             .get(&url)
             .headers(self.riot_headers())
             .send()
-            .await?
-            .text()
             .await?;
 
+        let status = response.status();
+        let resp_text = response.text().await?;
+
+        if !status.is_success() {
+            tracing::warn!(
+                "MMR request for {} returned HTTP {}: {}",
+                &puuid[..8.min(puuid.len())],
+                status.as_u16(),
+                &resp_text[..500.min(resp_text.len())]
+            );
+            return Ok(MmrResponse::default());
+        }
+
         match serde_json::from_str::<MmrResponse>(&resp_text) {
-            Ok(mmr) => Ok(mmr),
+            Ok(mmr) => {
+                if mmr.subject.is_none() && mmr.queue_skills.is_none() {
+                    tracing::warn!(
+                        "MMR response for {} parsed OK but has no data — raw: {}",
+                        &puuid[..8.min(puuid.len())],
+                        &resp_text[..500.min(resp_text.len())]
+                    );
+                }
+                Ok(mmr)
+            }
             Err(e) => {
                 tracing::warn!(
-                    "MMR deserialization failed for {}: {} — raw response (first 500 chars): {}",
+                    "MMR deserialization failed for {}: {} — raw: {}",
                     &puuid[..8.min(puuid.len())],
                     e,
                     &resp_text[..500.min(resp_text.len())]
@@ -295,6 +317,27 @@ impl RiotApiClient {
     }
 
     // --- valorant-api.com ---
+
+    pub async fn fetch_client_version(&mut self) -> Result<()> {
+        let resp: ValorantApiResponse<VersionData> = self
+            .http
+            .get("https://valorant-api.com/v1/version")
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if let Some(data) = resp.data {
+            if let Some(version) = data.riot_client_version {
+                tracing::info!("Using client version: {}", version);
+                self.client_version = version;
+                return Ok(());
+            }
+        }
+
+        tracing::warn!("Could not fetch client version from valorant-api.com");
+        Ok(())
+    }
 
     pub async fn fetch_agents(&mut self) -> Result<()> {
         if !self.agent_cache.is_empty() {
