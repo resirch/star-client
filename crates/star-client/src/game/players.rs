@@ -25,6 +25,11 @@ pub async fn fetch_pregame_players(
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
     let current_season = api.get_current_season_id().await.ok().flatten();
+    if current_season.is_none() {
+        tracing::warn!("Could not determine current season — rank data will be incomplete");
+    } else {
+        tracing::debug!("Current season: {}", current_season.as_deref().unwrap_or("?"));
+    }
 
     let mut players = Vec::new();
     if let Some(team) = &pregame.ally_team {
@@ -63,6 +68,9 @@ pub async fn fetch_coregame_players(
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
     let current_season = api.get_current_season_id().await.ok().flatten();
+    if current_season.is_none() {
+        tracing::warn!("Could not determine current season — rank data will be incomplete");
+    }
 
     let loadouts = api
         .get_coregame_loadouts(match_id)
@@ -121,13 +129,26 @@ async fn build_player_display(
         display.tag_line = name_entry.tag_line.clone().unwrap_or_default();
     }
 
-    if let Ok(mmr) = api.get_mmr(puuid).await {
-        extract_rank_data(&mut display, &mmr, current_season);
+    match api.get_mmr(puuid).await {
+        Ok(mmr) => {
+            if mmr.queue_skills.is_none() {
+                tracing::debug!("MMR response has no queue_skills for {}", &puuid[..8]);
+            }
+            extract_rank_data(&mut display, &mmr, current_season);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch MMR for {}: {}", &puuid[..8], e);
+        }
     }
 
-    if let Ok(updates) = api.get_competitive_updates(puuid).await {
-        extract_earned_rr(&mut display, &updates);
-        extract_performance_from_updates(&mut display, api, &updates).await;
+    match api.get_competitive_updates(puuid).await {
+        Ok(updates) => {
+            extract_earned_rr(&mut display, &updates);
+            extract_performance_from_updates(&mut display, api, &updates).await;
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch competitive updates for {}: {}", &puuid[..8], e);
+        }
     }
 
     display
@@ -213,7 +234,6 @@ async fn extract_performance_from_updates(
     api: &RiotApiClient,
     updates: &CompetitiveUpdatesResponse,
 ) {
-    // Get the most recent competitive match for K/D and HS%
     if let Some(first) = updates.matches.first() {
         if let Some(match_id) = &first.match_i_d {
             if let Ok(details) = api.get_match_details(match_id).await {
@@ -227,12 +247,41 @@ async fn extract_performance_from_updates(
                     }
                 }
 
-                // HS% requires round-level data which is in the full match details
-                // For now, compute from the available data
-                // A more detailed implementation would parse round results
+                let (hs, bs, ls) = aggregate_damage(&details, &display.puuid);
+                let total = hs + bs + ls;
+                if total > 0 {
+                    display.headshot_percent =
+                        (hs as f64 / total as f64 * 100.0 * 10.0).round() / 10.0;
+                }
             }
         }
     }
+}
+
+fn aggregate_damage(details: &MatchDetailsResponse, puuid: &str) -> (i32, i32, i32) {
+    let mut hs = 0i32;
+    let mut bs = 0i32;
+    let mut ls = 0i32;
+
+    if let Some(rounds) = &details.round_results {
+        for round in rounds {
+            if let Some(stats) = &round.player_stats {
+                for ps in stats {
+                    if ps.subject == puuid {
+                        if let Some(damages) = &ps.damage {
+                            for d in damages {
+                                hs += d.headshots.unwrap_or(0);
+                                bs += d.bodyshots.unwrap_or(0);
+                                ls += d.legshots.unwrap_or(0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (hs, bs, ls)
 }
 
 fn extract_weapon_skin(

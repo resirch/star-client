@@ -110,16 +110,27 @@ impl RiotApiClient {
 
     pub async fn get_mmr(&self, puuid: &str) -> Result<MmrResponse> {
         let url = endpoints::mmr(&self.auth, puuid);
-        let resp = self
+        let resp_text = self
             .http
             .get(&url)
             .headers(self.riot_headers())
             .send()
             .await?
-            .json()
-            .await
-            .unwrap_or_default();
-        Ok(resp)
+            .text()
+            .await?;
+
+        match serde_json::from_str::<MmrResponse>(&resp_text) {
+            Ok(mmr) => Ok(mmr),
+            Err(e) => {
+                tracing::warn!(
+                    "MMR deserialization failed for {}: {} — raw response (first 500 chars): {}",
+                    &puuid[..8.min(puuid.len())],
+                    e,
+                    &resp_text[..500.min(resp_text.len())]
+                );
+                Ok(MmrResponse::default())
+            }
+        }
     }
 
     // --- Competitive Updates ---

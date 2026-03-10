@@ -110,6 +110,7 @@ pub struct SeasonalInfo {
     pub capstone_wins: Option<i32>,
     pub leaderboard_rank: Option<i32>,
     pub competitive_tier: Option<i32>,
+    #[serde(alias = "RankedRating")]
     pub ranking_in_tier: Option<i32>,
     pub wins_by_tier: Option<HashMap<String, i32>>,
 }
@@ -148,6 +149,7 @@ pub struct MatchDetailsResponse {
     pub match_info: MatchInfo,
     pub players: Vec<MatchPlayer>,
     pub teams: Option<Vec<MatchTeam>>,
+    pub round_results: Option<Vec<RoundResult>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -191,6 +193,28 @@ pub struct MatchTeam {
     pub won: bool,
     pub rounds_played: Option<i32>,
     pub rounds_won: Option<i32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundResult {
+    pub round_num: Option<i32>,
+    pub player_stats: Option<Vec<RoundPlayerStats>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundPlayerStats {
+    pub subject: Puuid,
+    pub damage: Option<Vec<RoundDamage>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundDamage {
+    pub headshots: Option<i32>,
+    pub bodyshots: Option<i32>,
+    pub legshots: Option<i32>,
 }
 
 // --- Pregame ---
