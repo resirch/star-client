@@ -1,0 +1,32 @@
+[package]
+name = "star-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+egui = "0.29"
+egui_overlay = "0.9"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+native-tls = "0.2"
+futures-util = "0.3"
+toml = "0.8"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+directories = "5"
+tray-icon = "0.19"
+discord-rich-presence = "0.2"
+winit = "0.30"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse"] }

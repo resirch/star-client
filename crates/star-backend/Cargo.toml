@@ -1,0 +1,18 @@
+[package]
+name = "star-backend"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+axum = "0.8"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"

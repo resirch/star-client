@@ -1,0 +1,24 @@
+app = "star-api"
+primary_region = "iad"
+
+[build]
+
+[env]
+  DATABASE_URL = "sqlite:/data/star.db?mode=rwc"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = "star_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

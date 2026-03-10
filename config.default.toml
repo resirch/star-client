@@ -1,0 +1,27 @@
+[overlay]
+hotkey = "F2"
+weapon = "Vandal"
+opacity = 0.85
+
+[columns]
+skin = true
+rr = true
+earned_rr = true
+peak_rank = true
+previous_rank = true
+leaderboard = true
+headshot_percent = true
+winrate = true
+kd = true
+level = true
+
+[behavior]
+auto_show_pregame = true
+auto_hide_ingame = true
+respect_streamer_mode = true
+party_finder = true
+discord_rpc = true
+
+[star]
+enabled = true
+backend_url = "https://star-api.fly.dev"
