@@ -173,6 +173,7 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
     ui.horizontal(|ui| {
         ui.set_height(ROW_H);
         let f = theme::body_font();
+        let loading = loading_dots(ui.ctx());
 
         // Party bar
         let (rect, _) = ui.allocate_exact_size(Vec2::new(PARTY_W, ROW_H), egui::Sense::hover());
@@ -205,58 +206,98 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         text_cell(ui, &name, NAME_W, &f, theme::TEXT_PRIMARY);
 
         // Rank (always shown)
-        text_cell(ui, &p.rank_name, RANK_W, &f, rank_color(p.current_rank));
+        if p.enriched {
+            text_cell(ui, &p.rank_name, RANK_W, &f, rank_color(p.current_rank));
+        } else {
+            text_cell(ui, &loading, RANK_W, &f, theme::TEXT_MUTED);
+        }
 
         if c.rr {
-            let t = if p.current_rank > 0 { format!("{} RR", p.rr) } else { "-".into() };
+            let t = if p.enriched {
+                if p.current_rank > 0 { format!("{} RR", p.rr) } else { "-".into() }
+            } else {
+                loading.clone()
+            };
             text_cell(ui, &t, RR_W, &f, theme::TEXT_SECONDARY);
         }
 
         if c.peak_rank {
-            let t = if p.peak_rank > 0 { &p.peak_rank_name } else { "-" };
-            text_cell(ui, t, PEAK_W, &f, rank_color(p.peak_rank));
+            if p.enriched {
+                let t = if p.peak_rank > 0 { &p.peak_rank_name } else { "-" };
+                text_cell(ui, t, PEAK_W, &f, rank_color(p.peak_rank));
+            } else {
+                text_cell(ui, &loading, PEAK_W, &f, theme::TEXT_MUTED);
+            }
         }
 
         if c.previous_rank {
-            let t = if p.previous_rank > 0 { &p.previous_rank_name } else { "-" };
-            text_cell(ui, t, PREV_W, &f, rank_color(p.previous_rank));
+            if p.enriched {
+                let t = if p.previous_rank > 0 { &p.previous_rank_name } else { "-" };
+                text_cell(ui, t, PREV_W, &f, rank_color(p.previous_rank));
+            } else {
+                text_cell(ui, &loading, PREV_W, &f, theme::TEXT_MUTED);
+            }
         }
 
         if c.leaderboard {
-            let t = if p.leaderboard_position > 0 {
-                format!("#{}", p.leaderboard_position)
+            let t = if p.enriched {
+                if p.leaderboard_position > 0 {
+                    format!("#{}", p.leaderboard_position)
+                } else {
+                    "-".into()
+                }
             } else {
-                "-".into()
+                loading.clone()
             };
             text_cell(ui, &t, LB_W, &f, theme::TEXT_SECONDARY);
         }
 
         if c.kd {
-            let t = if p.kd > 0.0 { format!("{:.2}", p.kd) } else { "-".into() };
-            text_cell(ui, &t, KD_W, &f, theme::kd_color(p.kd));
+            let t = if p.enriched {
+                if p.kd > 0.0 { format!("{:.2}", p.kd) } else { "-".into() }
+            } else {
+                loading.clone()
+            };
+            let clr = if p.enriched { theme::kd_color(p.kd) } else { theme::TEXT_MUTED };
+            text_cell(ui, &t, KD_W, &f, clr);
         }
 
         if c.headshot_percent {
-            let t = if p.headshot_percent > 0.0 {
-                format!("{:.0}%", p.headshot_percent)
+            let t = if p.enriched {
+                if p.headshot_percent > 0.0 {
+                    format!("{:.0}%", p.headshot_percent)
+                } else {
+                    "-".into()
+                }
             } else {
-                "-".into()
+                loading.clone()
             };
-            text_cell(ui, &t, HS_W, &f, theme::hs_color(p.headshot_percent));
+            let clr = if p.enriched { theme::hs_color(p.headshot_percent) } else { theme::TEXT_MUTED };
+            text_cell(ui, &t, HS_W, &f, clr);
         }
 
         if c.winrate {
-            let t = if p.games > 0 { format!("{:.0}%", p.winrate) } else { "-".into() };
-            text_cell(ui, &t, WR_W, &f, theme::winrate_color(p.winrate));
+            let t = if p.enriched {
+                if p.games > 0 { format!("{:.0}%", p.winrate) } else { "-".into() }
+            } else {
+                loading.clone()
+            };
+            let clr = if p.enriched { theme::winrate_color(p.winrate) } else { theme::TEXT_MUTED };
+            text_cell(ui, &t, WR_W, &f, clr);
         }
 
         if c.earned_rr {
-            let t = if p.has_comp_update {
-                format!("{}{}", if p.earned_rr > 0 { "+" } else { "" }, p.earned_rr)
+            let t = if p.enriched {
+                if p.has_comp_update {
+                    format!("{}{}", if p.earned_rr > 0 { "+" } else { "" }, p.earned_rr)
+                } else {
+                    "-".into()
+                }
             } else {
-                "-".into()
+                loading.clone()
             };
-            text_cell(ui, &t, ERR_W, &f, theme::rr_change_color(p.earned_rr));
+            let clr = if p.enriched { theme::rr_change_color(p.earned_rr) } else { theme::TEXT_MUTED };
+            text_cell(ui, &t, ERR_W, &f, clr);
         }
 
         if c.level {
@@ -279,4 +320,15 @@ fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::
         font.clone(),
         color,
     );
+}
+
+fn loading_dots(ctx: &egui::Context) -> String {
+    // Keep it ASCII so it renders consistently on the overlay.
+    let t = ctx.input(|i| i.time);
+    let phase = ((t * 3.0) as i32).rem_euclid(3);
+    match phase {
+        0 => ".".to_string(),
+        1 => "..".to_string(),
+        _ => "...".to_string(),
+    }
 }
