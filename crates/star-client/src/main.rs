@@ -158,7 +158,8 @@ fn init_window(
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-        // Resize window to cover the full primary monitor
+        // Use GLFW for sizing (preserves the transparent framebuffer).
+        // Win32 SetWindowPos with actual dimensions destroys DWM composition.
         let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
         let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         glfw_backend.window.set_pos(0, 0);
@@ -174,14 +175,16 @@ fn init_window(
                     (ex_style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize),
                 );
 
+                // Only change Z-order + refresh frame; SWP_NOMOVE|SWP_NOSIZE
+                // keeps GLFW's geometry intact so transparency isn't broken.
                 SetWindowPos(
                     hwnd,
                     HWND_TOPMOST,
                     0,
                     0,
-                    screen_w,
-                    screen_h,
-                    SWP_FRAMECHANGED | SWP_NOACTIVATE,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE,
                 );
             }
         }
