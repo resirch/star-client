@@ -195,7 +195,7 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         }
 
         // Agent
-        text_cell(ui, &p.agent_name, AGENT_W, &f, theme::TEXT_PRIMARY);
+        text_cell(ui, &p.agent_name, AGENT_W, &f, theme::agent_color(&p.agent_name));
 
         // Name
         let name = if p.is_incognito {
