@@ -59,7 +59,6 @@ fn main() {
             .expect("tokio runtime");
 
         rt.block_on(async move {
-            // Wait for Riot Client and authenticate
             let lockfile_data = tokio::task::spawn_blocking(lockfile::wait_for_lockfile)
                 .await
                 .expect("lockfile task");
@@ -83,7 +82,6 @@ fn main() {
                 RiotApiClient::new(riot_auth.clone()).expect("API client"),
             ));
 
-            // Star system
             let star_client = Arc::new(StarClient::new(&config_bg.star.backend_url));
             if config_bg.star.enabled {
                 if let Err(e) = star_client.register(&riot_auth.puuid).await {
@@ -103,7 +101,6 @@ fn main() {
         });
     });
 
-    // Run the overlay on the main thread (egui_overlay requires this)
     run_overlay(app_state, quit_flag);
 }
 
@@ -113,6 +110,7 @@ fn run_overlay(app_state: Arc<RwLock<AppState>>, quit_flag: Arc<AtomicBool>) {
     struct StarOverlay {
         app_state: Arc<RwLock<AppState>>,
         quit_flag: Arc<AtomicBool>,
+        initialized: bool,
     }
 
     impl EguiOverlay for StarOverlay {
@@ -127,18 +125,19 @@ fn run_overlay(app_state: Arc<RwLock<AppState>>, quit_flag: Arc<AtomicBool>) {
                 return;
             }
 
-            // Try to read the shared state without blocking the render loop
-            let state_guard = self.app_state.try_read();
-            if let Ok(state) = state_guard {
-                // Keep window in front when overlay is visible
-                if state.overlay.visible {
-                    let (w, h) = glfw_backend.window.get_size();
-                    glfw_backend.window.set_size(w, h);
-                }
+            if !self.initialized {
+                self.initialized = true;
+                glfw_backend.window.set_floating(true);
+                apply_window_flags(glfw_backend);
+            }
 
-                state
-                    .overlay
-                    .render(egui_context, &state.game_state, &state.players, &state.config.columns);
+            if let Ok(state) = self.app_state.try_read() {
+                state.overlay.render(
+                    egui_context,
+                    &state.game_state,
+                    &state.players,
+                    &state.config.columns,
+                );
             }
 
             egui_context.request_repaint_after(std::time::Duration::from_millis(100));
@@ -148,5 +147,43 @@ fn run_overlay(app_state: Arc<RwLock<AppState>>, quit_flag: Arc<AtomicBool>) {
     egui_overlay::start(StarOverlay {
         app_state,
         quit_flag,
+        initialized: false,
     });
+}
+
+/// Sets the overlay window as TOPMOST and hides it from the taskbar.
+fn apply_window_flags(
+    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        let hwnd = glfw_backend.window.get_win32_window();
+        if !hwnd.is_null() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            unsafe {
+                let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    (ex_style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize),
+                );
+
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+                );
+            }
+            tracing::info!("Window set to topmost + hidden from taskbar");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = glfw_backend;
+    }
 }
