@@ -36,7 +36,6 @@ On first run, a config file is created at `%APPDATA%/star/star-client/config/con
 The star indicator system requires a backend server. To deploy:
 
 ```
-cd crates/star-backend
 fly launch
 fly deploy
 ```
