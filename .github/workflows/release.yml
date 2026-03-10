@@ -1,0 +1,74 @@
+name: Build Release
+
+on:
+  push:
+    branches: ["*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-client:
+    name: Build star-client (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build star-client
+        run: cargo build --release --package star-client
+
+      - name: Upload star-client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-client-windows
+          path: target/release/star-client.exe
+
+  build-backend:
+    name: Build star-backend (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build star-backend
+        run: cargo build --release --package star-backend
+
+      - name: Upload star-backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-backend-linux
+          path: target/release/star-backend
+
+  release:
+    name: Create Release
+    needs: [build-client, build-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release tag
+        id: tag
+        run: echo "tag=build-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Build ${{ github.sha }}
+          body: "Automated build from commit ${{ github.sha }}"
+          draft: false
+          prerelease: true
+          files: |
+            artifacts/star-client-windows/star-client.exe
+            artifacts/star-backend-linux/star-backend
