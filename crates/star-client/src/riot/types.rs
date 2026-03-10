@@ -434,6 +434,7 @@ pub struct PlayerDisplayData {
     pub wins: i32,
     pub games: i32,
     pub earned_rr: i32,
+    pub has_comp_update: bool,
     pub afk_penalty: i32,
     pub account_level: i32,
     pub skin_name: String,

@@ -213,11 +213,13 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         }
 
         if c.peak_rank {
-            text_cell(ui, &p.peak_rank_name, PEAK_W, &f, rank_color(p.peak_rank));
+            let t = if p.peak_rank > 0 { &p.peak_rank_name } else { "-" };
+            text_cell(ui, t, PEAK_W, &f, rank_color(p.peak_rank));
         }
 
         if c.previous_rank {
-            text_cell(ui, &p.previous_rank_name, PREV_W, &f, rank_color(p.previous_rank));
+            let t = if p.previous_rank > 0 { &p.previous_rank_name } else { "-" };
+            text_cell(ui, t, PREV_W, &f, rank_color(p.previous_rank));
         }
 
         if c.leaderboard {
@@ -249,7 +251,7 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         }
 
         if c.earned_rr {
-            let t = if p.earned_rr != 0 {
+            let t = if p.has_comp_update {
                 format!("{}{}", if p.earned_rr > 0 { "+" } else { "" }, p.earned_rr)
             } else {
                 "-".into()
@@ -258,7 +260,8 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         }
 
         if c.level {
-            text_cell(ui, &p.account_level.to_string(), LVL_W, &f, theme::TEXT_SECONDARY);
+            let t = if p.account_level > 0 { p.account_level.to_string() } else { "-".into() };
+            text_cell(ui, &t, LVL_W, &f, theme::TEXT_SECONDARY);
         }
 
         if c.skin {

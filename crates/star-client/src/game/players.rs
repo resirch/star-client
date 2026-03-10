@@ -244,12 +244,32 @@ fn extract_rank_data(
             }
         }
     }
+
+    if display.rank_name.is_empty() {
+        display.rank_name = rank_name(display.current_rank).to_string();
+    }
 }
 
 fn extract_earned_rr(display: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
+    let short_id = &display.puuid[..8.min(display.puuid.len())];
+    tracing::debug!(
+        "Competitive updates for {}: {} matches",
+        short_id,
+        updates.matches.len()
+    );
     if let Some(first) = updates.matches.first() {
         display.earned_rr = first.ranked_rating_earned.unwrap_or(0);
         display.afk_penalty = first.afk_penalty.unwrap_or(0);
+        display.has_comp_update = true;
+        tracing::debug!(
+            "Comp update for {}: earned_rr={:?} tier_after={:?} tier_before={:?} rr_after={:?} rr_before={:?}",
+            short_id,
+            first.ranked_rating_earned,
+            first.tier_after_update,
+            first.tier_before_update,
+            first.ranked_rating_after_update,
+            first.ranked_rating_before_update
+        );
     }
 }
 
