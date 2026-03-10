@@ -9,6 +9,7 @@ pub async fn fetch_pregame_players(
     match_id: &str,
     _config: &Config,
 ) -> Result<Vec<PlayerDisplayData>> {
+    tracing::debug!("Fetching pregame players for match_id={}", match_id);
     let pregame = api.get_pregame_match(match_id).await?;
     api.fetch_agents().await.ok();
     api.fetch_skin_levels().await.ok();
@@ -20,7 +21,12 @@ pub async fn fetch_pregame_players(
         }
     }
 
+    tracing::debug!(
+        "Pregame ally_team puuids: {}",
+        puuids.len()
+    );
     let names = api.get_names(&puuids).await.unwrap_or_default();
+    tracing::debug!("Pregame name service returned {} entries", names.len());
     let name_map: HashMap<String, &NameServiceEntry> =
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
@@ -43,6 +49,7 @@ pub async fn fetch_pregame_players(
         }
     }
 
+    tracing::debug!("Built {} pregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
 
@@ -51,12 +58,15 @@ pub async fn fetch_coregame_players(
     match_id: &str,
     config: &Config,
 ) -> Result<Vec<PlayerDisplayData>> {
+    tracing::debug!("Fetching coregame players for match_id={}", match_id);
     let coregame = api.get_coregame_match(match_id).await?;
     api.fetch_agents().await.ok();
     api.fetch_skin_levels().await.ok();
 
     let puuids: Vec<String> = coregame.players.iter().map(|p| p.subject.clone()).collect();
+    tracing::debug!("Coregame player puuids: {}", puuids.len());
     let names = api.get_names(&puuids).await.unwrap_or_default();
+    tracing::debug!("Coregame name service returned {} entries", names.len());
     let name_map: HashMap<String, &NameServiceEntry> =
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
@@ -64,6 +74,7 @@ pub async fn fetch_coregame_players(
         .get_coregame_loadouts(match_id)
         .await
         .ok();
+    tracing::debug!("Coregame loadouts available: {}", loadouts.is_some());
 
     let loadout_map: HashMap<String, &PlayerLoadout> = loadouts
         .as_ref()
@@ -93,6 +104,7 @@ pub async fn fetch_coregame_players(
         players.push(display);
     }
 
+    tracing::debug!("Built {} coregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
 
@@ -124,6 +136,13 @@ pub async fn enrich_player(
 ) {
     let puuid = player.puuid.clone();
     let short_id = &puuid[..8.min(puuid.len())];
+    tracing::debug!(
+        "Enriching player {} name='{}' tag='{}' season={}",
+        short_id,
+        player.game_name,
+        player.tag_line,
+        current_season.as_deref().unwrap_or("none")
+    );
 
     let mmr_ok = match api.get_mmr(&puuid).await {
         Ok(mmr) => {

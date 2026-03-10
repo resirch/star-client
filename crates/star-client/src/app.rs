@@ -113,6 +113,13 @@ pub async fn run_data_loop(
 
         if is_new_match || (state_changed && !match_id.is_empty()) {
             // Phase 1: Fetch basic player info (names, agents, levels, teams)
+            tracing::debug!(
+                "Player retrieval triggered: state_changed={}, is_new_match={}, game_state={:?}, match_id={}",
+                state_changed,
+                is_new_match,
+                new_state,
+                match_id
+            );
             let mut players_data = match &new_state {
                 GameState::Pregame { match_id } => {
                     players::fetch_pregame_players(&mut api_guard, match_id, &config)
@@ -127,6 +134,10 @@ pub async fn run_data_loop(
                 _ => Vec::new(),
             };
 
+            tracing::debug!(
+                "Phase 1 complete: fetched {} basic players",
+                players_data.len()
+            );
             if config.behavior.party_finder && !players_data.is_empty() {
                 party::detect_parties(&api_guard, &mut players_data).await;
             }
@@ -168,6 +179,10 @@ pub async fn run_data_loop(
 
             // Phase 2: Enrich each player with rank/KD/HS% and update after each
             let current_season = api_guard.get_current_season_id().await.ok().flatten();
+            tracing::debug!(
+                "Phase 2 start: current_season={}",
+                current_season.as_deref().unwrap_or("none")
+            );
             let player_count = {
                 let state = app_state.read().await;
                 state.players.len()
@@ -182,6 +197,15 @@ pub async fn run_data_loop(
                     state.players[i].clone()
                 };
 
+                let short_id = &player.puuid[..8.min(player.puuid.len())];
+                tracing::debug!(
+                    "Phase 2 enrich [{} / {}]: {} '{}#{}'",
+                    i + 1,
+                    player_count,
+                    short_id,
+                    player.game_name,
+                    player.tag_line
+                );
                 players::enrich_player(&api_guard, &mut player, &current_season).await;
 
                 let mut state = app_state.write().await;
