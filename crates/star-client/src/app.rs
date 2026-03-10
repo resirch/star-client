@@ -5,7 +5,6 @@ use crate::game::match_data::{self, MatchContext};
 use crate::game::party;
 use crate::game::players;
 use crate::game::state::{self, GameState};
-use crate::overlay::ui::OverlayUi;
 use crate::riot::api::RiotApiClient;
 use crate::riot::types::PlayerDisplayData;
 use crate::star::client::StarClient;
@@ -19,7 +18,7 @@ pub struct AppState {
     pub game_state: GameState,
     pub players: Vec<PlayerDisplayData>,
     pub match_context: Option<MatchContext>,
-    pub overlay: OverlayUi,
+    pub auto_visible: bool,
     pub last_match_id: String,
 }
 
@@ -30,7 +29,7 @@ impl AppState {
             game_state: GameState::WaitingForClient,
             players: Vec::new(),
             match_context: None,
-            overlay: OverlayUi::new(),
+            auto_visible: false,
             last_match_id: String::new(),
         }
     }
@@ -40,7 +39,6 @@ pub async fn run_data_loop(
     app_state: Arc<RwLock<AppState>>,
     api: Arc<RwLock<RiotApiClient>>,
     star_client: Arc<StarClient>,
-    hotkey_toggle: Arc<AtomicBool>,
     quit_flag: Arc<AtomicBool>,
 ) {
     let history = {
@@ -66,15 +64,9 @@ pub async fn run_data_loop(
             break;
         }
 
-        // Check hotkey toggle
-        if hotkey_toggle.swap(false, Ordering::Relaxed) {
-            let mut state = app_state.write().await;
-            state.overlay.visible = !state.overlay.visible;
-            tracing::debug!("Overlay toggled: {}", state.overlay.visible);
-        }
-
         let mut api_guard = api.write().await;
-        let new_state = state::detect_game_state(&api_guard).await.unwrap_or(GameState::Menu);
+        let new_state =
+            state::detect_game_state(&api_guard).await.unwrap_or(GameState::Menu);
 
         let config = {
             let state = app_state.read().await;
@@ -94,20 +86,19 @@ pub async fn run_data_loop(
             };
         }
 
-        // Auto-show/hide overlay on state transitions
         if state_changed {
             let mut state = app_state.write().await;
             state.game_state = new_state.clone();
 
             match &new_state {
                 GameState::Pregame { .. } if config.behavior.auto_show_pregame => {
-                    state.overlay.visible = true;
+                    state.auto_visible = true;
                 }
                 GameState::Ingame { .. } if config.behavior.auto_hide_ingame => {
-                    state.overlay.visible = false;
+                    state.auto_visible = false;
                 }
                 GameState::Menu => {
-                    state.overlay.visible = false;
+                    state.auto_visible = false;
                     state.players.clear();
                     state.match_context = None;
                 }
@@ -115,7 +106,6 @@ pub async fn run_data_loop(
             }
         }
 
-        // Fetch player data when in a match
         let should_fetch = {
             let state = app_state.read().await;
             !match_id.is_empty() && match_id != state.last_match_id
@@ -136,26 +126,23 @@ pub async fn run_data_loop(
                 _ => Vec::new(),
             };
 
-            // Party detection
             if config.behavior.party_finder && !players_data.is_empty() {
                 party::detect_parties(&api_guard, &mut players_data).await;
             }
 
-            // Star presence
             if config.star.enabled {
                 presence::mark_star_users(&star_client, &mut players_data).await;
             }
 
-            // Record encounters
             if let Some(history) = &history {
                 for p in &players_data {
                     if !p.game_name.is_empty() {
-                        let _ = history.record_encounter(&p.puuid, &p.game_name, &p.tag_line);
+                        let _ =
+                            history.record_encounter(&p.puuid, &p.game_name, &p.tag_line);
                     }
                 }
             }
 
-            // Fetch match context
             let ctx = match &new_state {
                 GameState::Pregame { match_id } => {
                     match_data::fetch_pregame_context(&api_guard, match_id)
@@ -176,7 +163,6 @@ pub async fn run_data_loop(
             state.last_match_id = match_id.clone();
         }
 
-        // Update Discord RPC
         if config.behavior.discord_rpc {
             let state = app_state.read().await;
             let rank_name = state

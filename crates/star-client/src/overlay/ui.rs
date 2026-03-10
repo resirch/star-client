@@ -23,69 +23,60 @@ const ROW_H: f32 = 22.0;
 const HDR_H: f32 = 20.0;
 const CELL_PAD: f32 = 3.0;
 
-pub struct OverlayUi {
-    pub visible: bool,
-}
-
-impl OverlayUi {
-    pub fn new() -> Self {
-        Self { visible: false }
+pub fn render_overlay(
+    ctx: &egui::Context,
+    game_state: &GameState,
+    players: &[PlayerDisplayData],
+    columns: &ColumnConfig,
+) {
+    if players.is_empty() {
+        return;
     }
 
-    pub fn render(
-        &self,
-        ctx: &egui::Context,
-        game_state: &GameState,
-        players: &[PlayerDisplayData],
-        columns: &ColumnConfig,
-    ) {
-        if !self.visible || players.is_empty() {
-            return;
-        }
+    let screen = ctx.screen_rect();
+    let tw = table_width(columns);
+    let x = (screen.width() - tw) / 2.0;
+    let y = 60.0;
 
-        let screen = ctx.screen_rect();
-        let table_width = table_width(columns);
-        let x = (screen.width() - table_width) / 2.0;
-        let y = 60.0;
+    egui::Area::new(egui::Id::new("star_overlay"))
+        .fixed_pos(Pos2::new(x, y))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(theme::BG_COLOR)
+                .rounding(theme::table_rounding())
+                .stroke(theme::table_stroke())
+                .inner_margin(6.0)
+                .show(ui, |ui: &mut Ui| {
+                    ui.set_min_width(tw);
+                    title_bar(ui, game_state);
+                    ui.add_space(4.0);
+                    header_row(ui, columns);
+                    ui.add_space(2.0);
 
-        egui::Area::new(egui::Id::new("star_overlay"))
-            .fixed_pos(Pos2::new(x, y))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::none()
-                    .fill(theme::BG_COLOR)
-                    .rounding(theme::table_rounding())
-                    .stroke(theme::table_stroke())
-                    .inner_margin(6.0)
-                    .show(ui, |ui: &mut Ui| {
-                        ui.set_min_width(table_width);
-                        title_bar(ui, game_state);
-                        ui.add_space(4.0);
-                        header_row(ui, columns);
-                        ui.add_space(2.0);
+                    let my_team =
+                        players.first().map(|p| p.team_id.as_str()).unwrap_or("");
+                    let (allies, enemies): (Vec<_>, Vec<_>) = players
+                        .iter()
+                        .partition(|p| p.team_id == my_team || my_team.is_empty());
 
-                        let my_team = players.first().map(|p| p.team_id.as_str()).unwrap_or("");
-                        let (allies, enemies): (Vec<_>, Vec<_>) = players
-                            .iter()
-                            .partition(|p| p.team_id == my_team || my_team.is_empty());
-
-                        if !allies.is_empty() {
-                            team_label(ui, "YOUR TEAM");
-                            for p in &allies {
-                                player_row(ui, p, columns, true);
-                            }
+                    if !allies.is_empty() {
+                        team_label(ui, "YOUR TEAM");
+                        for p in &allies {
+                            player_row(ui, p, columns, true);
                         }
+                    }
 
-                        if !enemies.is_empty() {
-                            ui.add_space(6.0);
-                            team_label(ui, "ENEMY TEAM");
-                            for p in &enemies {
-                                player_row(ui, p, columns, false);
-                            }
+                    if !enemies.is_empty() {
+                        ui.add_space(6.0);
+                        team_label(ui, "ENEMY TEAM");
+                        for p in &enemies {
+                            player_row(ui, p, columns, false);
                         }
-                    });
-            });
-    }
+                    }
+                });
+        });
 }
 
 fn table_width(c: &ColumnConfig) -> f32 {
@@ -100,7 +91,7 @@ fn table_width(c: &ColumnConfig) -> f32 {
     if c.earned_rr { w += ERR_W; }
     if c.level { w += LVL_W; }
     if c.skin { w += SKIN_W; }
-    w + 12.0 // inner margin
+    w + 12.0
 }
 
 fn title_bar(ui: &mut Ui, state: &GameState) {
@@ -216,47 +207,47 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         // Rank (always shown)
         text_cell(ui, &p.rank_name, RANK_W, &f, rank_color(p.current_rank));
 
-        // RR
         if c.rr {
             let t = if p.current_rank > 0 { format!("{} RR", p.rr) } else { "-".into() };
             text_cell(ui, &t, RR_W, &f, theme::TEXT_SECONDARY);
         }
 
-        // Peak
         if c.peak_rank {
             text_cell(ui, &p.peak_rank_name, PEAK_W, &f, rank_color(p.peak_rank));
         }
 
-        // Prev
         if c.previous_rank {
             text_cell(ui, &p.previous_rank_name, PREV_W, &f, rank_color(p.previous_rank));
         }
 
-        // Leaderboard
         if c.leaderboard {
-            let t = if p.leaderboard_position > 0 { format!("#{}", p.leaderboard_position) } else { "-".into() };
+            let t = if p.leaderboard_position > 0 {
+                format!("#{}", p.leaderboard_position)
+            } else {
+                "-".into()
+            };
             text_cell(ui, &t, LB_W, &f, theme::TEXT_SECONDARY);
         }
 
-        // K/D
         if c.kd {
             let t = if p.kd > 0.0 { format!("{:.2}", p.kd) } else { "-".into() };
             text_cell(ui, &t, KD_W, &f, theme::kd_color(p.kd));
         }
 
-        // HS%
         if c.headshot_percent {
-            let t = if p.headshot_percent > 0.0 { format!("{:.0}%", p.headshot_percent) } else { "-".into() };
+            let t = if p.headshot_percent > 0.0 {
+                format!("{:.0}%", p.headshot_percent)
+            } else {
+                "-".into()
+            };
             text_cell(ui, &t, HS_W, &f, theme::hs_color(p.headshot_percent));
         }
 
-        // WR%
         if c.winrate {
             let t = if p.games > 0 { format!("{:.0}%", p.winrate) } else { "-".into() };
             text_cell(ui, &t, WR_W, &f, theme::winrate_color(p.winrate));
         }
 
-        // ΔRR
         if c.earned_rr {
             let t = if p.earned_rr != 0 {
                 format!("{}{}", if p.earned_rr > 0 { "+" } else { "" }, p.earned_rr)
@@ -266,12 +257,10 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
             text_cell(ui, &t, ERR_W, &f, theme::rr_change_color(p.earned_rr));
         }
 
-        // Level
         if c.level {
             text_cell(ui, &p.account_level.to_string(), LVL_W, &f, theme::TEXT_SECONDARY);
         }
 
-        // Skin
         if c.skin {
             text_cell(ui, &p.skin_name, SKIN_W, &f, theme::TEXT_SECONDARY);
         }

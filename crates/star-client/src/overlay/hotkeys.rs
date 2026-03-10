@@ -2,36 +2,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub struct HotkeyManager {
-    toggle_flag: Arc<AtomicBool>,
+    key_held: Arc<AtomicBool>,
 }
 
 impl HotkeyManager {
     pub fn new() -> Self {
         Self {
-            toggle_flag: Arc::new(AtomicBool::new(false)),
+            key_held: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn toggle_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.toggle_flag)
+    pub fn key_held(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.key_held)
     }
 
-    /// Starts listening for the overlay toggle hotkey on a background thread.
-    /// Uses Windows raw input to avoid interfering with the game.
+    /// Polls the hotkey state on a background thread.
+    /// The flag reflects whether the key is currently held down.
     pub fn start(&self, hotkey_name: &str) {
-        let flag = Arc::clone(&self.toggle_flag);
+        let flag = Arc::clone(&self.key_held);
         let vk = hotkey_name_to_vk(hotkey_name);
 
         std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(16));
 
                 #[cfg(target_os = "windows")]
                 {
-                    let pressed = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk) };
-                    if pressed as u16 & 0x0001 != 0 {
-                        flag.store(true, Ordering::Relaxed);
-                    }
+                    let state = unsafe {
+                        windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk)
+                    };
+                    // High bit set = key is currently held down
+                    let held = (state & (1 << 15)) != 0;
+                    flag.store(held, Ordering::Relaxed);
                 }
 
                 #[cfg(not(target_os = "windows"))]
@@ -62,6 +64,6 @@ fn hotkey_name_to_vk(name: &str) -> i32 {
         "END" => 0x23,
         "PAGEUP" => 0x21,
         "PAGEDOWN" => 0x22,
-        _ => 0x71, // Default F2
+        _ => 0x71,
     }
 }

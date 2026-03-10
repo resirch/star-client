@@ -34,21 +34,16 @@ fn main() {
 
     let quit_flag = Arc::new(AtomicBool::new(false));
 
-    // System tray (must be created on main thread for Windows)
     let _tray = tray::SystemTray::new(Arc::clone(&quit_flag)).ok();
 
-    // Hotkey manager
     let hotkey_mgr = HotkeyManager::new();
     hotkey_mgr.start(&config.overlay.hotkey);
-    let toggle_flag = hotkey_mgr.toggle_flag();
+    let key_held = hotkey_mgr.key_held();
 
-    // App state shared between data loop and overlay renderer
     let app_state = Arc::new(RwLock::new(AppState::new(config.clone())));
 
-    // Start the async runtime for data fetching in a background thread
     let app_state_bg = Arc::clone(&app_state);
     let quit_flag_bg = Arc::clone(&quit_flag);
-    let toggle_flag_bg = Arc::clone(&toggle_flag);
     let config_bg = config.clone();
 
     std::thread::spawn(move || {
@@ -90,26 +85,24 @@ fn main() {
                 star_client.start_heartbeat_loop();
             }
 
-            app::run_data_loop(
-                app_state_bg,
-                api,
-                star_client,
-                toggle_flag_bg,
-                quit_flag_bg,
-            )
-            .await;
+            app::run_data_loop(app_state_bg, api, star_client, quit_flag_bg).await;
         });
     });
 
-    run_overlay(app_state, quit_flag);
+    run_overlay(app_state, quit_flag, key_held);
 }
 
-fn run_overlay(app_state: Arc<RwLock<AppState>>, quit_flag: Arc<AtomicBool>) {
+fn run_overlay(
+    app_state: Arc<RwLock<AppState>>,
+    quit_flag: Arc<AtomicBool>,
+    key_held: Arc<AtomicBool>,
+) {
     use egui_overlay::EguiOverlay;
 
     struct StarOverlay {
         app_state: Arc<RwLock<AppState>>,
         quit_flag: Arc<AtomicBool>,
+        key_held: Arc<AtomicBool>,
         initialized: bool,
     }
 
@@ -127,17 +120,21 @@ fn run_overlay(app_state: Arc<RwLock<AppState>>, quit_flag: Arc<AtomicBool>) {
 
             if !self.initialized {
                 self.initialized = true;
-                glfw_backend.window.set_floating(true);
-                apply_window_flags(glfw_backend);
+                init_window(glfw_backend);
             }
 
+            let hotkey_active = self.key_held.load(Ordering::Relaxed);
+
             if let Ok(state) = self.app_state.try_read() {
-                state.overlay.render(
-                    egui_context,
-                    &state.game_state,
-                    &state.players,
-                    &state.config.columns,
-                );
+                let visible = state.auto_visible || hotkey_active;
+                if visible {
+                    overlay::ui::render_overlay(
+                        egui_context,
+                        &state.game_state,
+                        &state.players,
+                        &state.config.columns,
+                    );
+                }
             }
 
             egui_context.request_repaint_after(std::time::Duration::from_millis(100));
@@ -147,19 +144,28 @@ fn run_overlay(app_state: Arc<RwLock<AppState>>, quit_flag: Arc<AtomicBool>) {
     egui_overlay::start(StarOverlay {
         app_state,
         quit_flag,
+        key_held,
         initialized: false,
     });
 }
 
-/// Sets the overlay window as TOPMOST and hides it from the taskbar.
-fn apply_window_flags(
+fn init_window(
     glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
 ) {
+    glfw_backend.window.set_floating(true);
+
     #[cfg(target_os = "windows")]
     {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+        // Resize window to cover the full primary monitor
+        let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        glfw_backend.window.set_pos(0, 0);
+        glfw_backend.window.set_size(screen_w, screen_h);
+
         let hwnd = glfw_backend.window.get_win32_window();
         if !hwnd.is_null() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::*;
             unsafe {
                 let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                 SetWindowLongPtrW(
@@ -173,13 +179,18 @@ fn apply_window_flags(
                     HWND_TOPMOST,
                     0,
                     0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+                    screen_w,
+                    screen_h,
+                    SWP_FRAMECHANGED | SWP_NOACTIVATE,
                 );
             }
-            tracing::info!("Window set to topmost + hidden from taskbar");
         }
+
+        tracing::info!(
+            "Window initialized: {}x{}, topmost, hidden from taskbar",
+            screen_w,
+            screen_h
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
