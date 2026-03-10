@@ -82,7 +82,7 @@ fn default_opacity() -> f32 {
     0.85
 }
 fn default_backend_url() -> String {
-    "https://star-api.fly.dev".into()
+    "https://star-client.fly.dev".into()
 }
 
 impl Default for Config {

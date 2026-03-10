@@ -24,4 +24,4 @@ discord_rpc = true
 
 [star]
 enabled = true
-backend_url = "https://star-api.fly.dev"
+backend_url = "https://star-client.fly.dev"
