@@ -106,12 +106,13 @@ pub async fn run_data_loop(
             }
         }
 
-        let should_fetch = {
+        let is_new_match = {
             let state = app_state.read().await;
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
-        if should_fetch || (state_changed && !match_id.is_empty()) {
+        if is_new_match || (state_changed && !match_id.is_empty()) {
+            // Phase 1: Fetch basic player info (names, agents, levels, teams)
             let mut players_data = match &new_state {
                 GameState::Pregame { match_id } => {
                     players::fetch_pregame_players(&mut api_guard, match_id, &config)
@@ -157,10 +158,94 @@ pub async fn run_data_loop(
                 _ => None,
             };
 
-            let mut state = app_state.write().await;
-            state.players = players_data;
-            state.match_context = ctx;
-            state.last_match_id = match_id.clone();
+            // Show basic info immediately
+            {
+                let mut state = app_state.write().await;
+                state.players = players_data;
+                state.match_context = ctx;
+                state.last_match_id = match_id.clone();
+            }
+
+            // Phase 2: Enrich each player with rank/KD/HS% and update after each
+            let current_season = api_guard.get_current_season_id().await.ok().flatten();
+            let player_count = {
+                let state = app_state.read().await;
+                state.players.len()
+            };
+
+            for i in 0..player_count {
+                let mut player = {
+                    let state = app_state.read().await;
+                    if i >= state.players.len() {
+                        break;
+                    }
+                    state.players[i].clone()
+                };
+
+                players::enrich_player(&api_guard, &mut player, &current_season).await;
+
+                let mut state = app_state.write().await;
+                if i < state.players.len() && state.players[i].puuid == player.puuid {
+                    state.players[i] = player;
+                }
+            }
+
+            let enriched_count = {
+                let state = app_state.read().await;
+                state.players.iter().filter(|p| p.enriched).count()
+            };
+            tracing::info!(
+                "Initial enrichment: {}/{} players complete",
+                enriched_count,
+                player_count
+            );
+        }
+
+        // Phase 3: Re-enrich players that failed on previous attempts
+        if !match_id.is_empty() {
+            let unenriched: Vec<(usize, String)> = {
+                let state = app_state.read().await;
+                if state.last_match_id != match_id {
+                    Vec::new()
+                } else {
+                    state
+                        .players
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| !p.enriched && !p.puuid.is_empty())
+                        .map(|(i, p)| (i, p.puuid.clone()))
+                        .collect()
+                }
+            };
+
+            if !unenriched.is_empty() {
+                tracing::debug!(
+                    "Re-enriching {} incomplete players",
+                    unenriched.len()
+                );
+                let current_season =
+                    api_guard.get_current_season_id().await.ok().flatten();
+
+                for (idx, puuid) in &unenriched {
+                    let mut player = {
+                        let state = app_state.read().await;
+                        if *idx >= state.players.len() {
+                            continue;
+                        }
+                        state.players[*idx].clone()
+                    };
+
+                    players::enrich_player(&api_guard, &mut player, &current_season)
+                        .await;
+
+                    let mut state = app_state.write().await;
+                    if *idx < state.players.len()
+                        && state.players[*idx].puuid == *puuid
+                    {
+                        state.players[*idx] = player;
+                    }
+                }
+            }
         }
 
         if config.behavior.discord_rpc {

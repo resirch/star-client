@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub async fn fetch_pregame_players(
     api: &mut RiotApiClient,
     match_id: &str,
-    config: &Config,
+    _config: &Config,
 ) -> Result<Vec<PlayerDisplayData>> {
     let pregame = api.get_pregame_match(match_id).await?;
     api.fetch_agents().await.ok();
@@ -24,17 +24,10 @@ pub async fn fetch_pregame_players(
     let name_map: HashMap<String, &NameServiceEntry> =
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
-    let current_season = api.get_current_season_id().await.ok().flatten();
-    if current_season.is_none() {
-        tracing::warn!("Could not determine current season — rank data will be incomplete");
-    } else {
-        tracing::debug!("Current season: {}", current_season.as_deref().unwrap_or("?"));
-    }
-
     let mut players = Vec::new();
     if let Some(team) = &pregame.ally_team {
         for p in &team.players {
-            let mut display = build_player_display(api, &p.subject, &name_map, &current_season, config).await;
+            let mut display = build_basic_player(&p.subject, &name_map);
 
             if let Some(identity) = &p.player_identity {
                 display.account_level = identity.account_level.unwrap_or(0);
@@ -67,11 +60,6 @@ pub async fn fetch_coregame_players(
     let name_map: HashMap<String, &NameServiceEntry> =
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
-    let current_season = api.get_current_season_id().await.ok().flatten();
-    if current_season.is_none() {
-        tracing::warn!("Could not determine current season — rank data will be incomplete");
-    }
-
     let loadouts = api
         .get_coregame_loadouts(match_id)
         .await
@@ -84,7 +72,7 @@ pub async fn fetch_coregame_players(
 
     let mut players = Vec::new();
     for p in &coregame.players {
-        let mut display = build_player_display(api, &p.subject, &name_map, &current_season, config).await;
+        let mut display = build_basic_player(&p.subject, &name_map);
 
         if let Some(identity) = &p.player_identity {
             display.account_level = identity.account_level.unwrap_or(0);
@@ -108,12 +96,9 @@ pub async fn fetch_coregame_players(
     Ok(players)
 }
 
-async fn build_player_display(
-    api: &RiotApiClient,
+fn build_basic_player(
     puuid: &str,
     name_map: &HashMap<String, &NameServiceEntry>,
-    current_season: &Option<String>,
-    _config: &Config,
 ) -> PlayerDisplayData {
     let mut display = PlayerDisplayData {
         puuid: puuid.to_string(),
@@ -129,29 +114,49 @@ async fn build_player_display(
         display.tag_line = name_entry.tag_line.clone().unwrap_or_default();
     }
 
-    match api.get_mmr(puuid).await {
-        Ok(mmr) => {
-            if mmr.queue_skills.is_none() {
-                tracing::debug!("MMR response has no queue_skills for {}", &puuid[..8]);
-            }
-            extract_rank_data(&mut display, &mmr, current_season);
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch MMR for {}: {}", &puuid[..8], e);
-        }
-    }
-
-    match api.get_competitive_updates(puuid).await {
-        Ok(updates) => {
-            extract_earned_rr(&mut display, &updates);
-            extract_performance_from_updates(&mut display, api, &updates).await;
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch competitive updates for {}: {}", &puuid[..8], e);
-        }
-    }
-
     display
+}
+
+pub async fn enrich_player(
+    api: &RiotApiClient,
+    player: &mut PlayerDisplayData,
+    current_season: &Option<String>,
+) {
+    let puuid = player.puuid.clone();
+    let short_id = &puuid[..8.min(puuid.len())];
+
+    let mmr_ok = match api.get_mmr(&puuid).await {
+        Ok(mmr) => {
+            let has_data = mmr.subject.is_some();
+            if mmr.queue_skills.is_none() && has_data {
+                tracing::debug!("MMR response has no queue_skills for {}", short_id);
+            }
+            extract_rank_data(player, &mmr, current_season);
+            has_data
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch MMR for {}: {}", short_id, e);
+            false
+        }
+    };
+
+    let comp_ok = match api.get_competitive_updates(&puuid).await {
+        Ok(updates) => {
+            extract_earned_rr(player, &updates);
+            extract_performance_from_updates(player, api, &updates).await;
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to fetch competitive updates for {}: {}",
+                short_id,
+                e
+            );
+            false
+        }
+    };
+
+    player.enriched = mmr_ok || comp_ok;
 }
 
 fn extract_rank_data(

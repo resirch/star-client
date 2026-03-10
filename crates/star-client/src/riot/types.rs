@@ -441,6 +441,8 @@ pub struct PlayerDisplayData {
     pub party_number: i32,
     pub is_incognito: bool,
     pub is_star_user: bool,
+    #[serde(skip)]
+    pub enriched: bool,
 }
 
 pub const RANK_NAMES: &[&str] = &[
