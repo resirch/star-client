@@ -102,12 +102,7 @@ fn split_players_by_team<'a>(
     players: &'a [PlayerDisplayData],
     local_puuid: &str,
 ) -> (Vec<&'a PlayerDisplayData>, Vec<&'a PlayerDisplayData>) {
-    let my_team = players
-        .iter()
-        .find(|player| player.puuid == local_puuid)
-        .or_else(|| players.first())
-        .map(|player| player.team_id.as_str())
-        .unwrap_or("");
+    let my_team = local_team_id(players, local_puuid);
 
     players
         .iter()
@@ -563,6 +558,24 @@ fn skin_cell(
         Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
     );
     let painter = ui.painter().with_clip_rect(clip_rect);
+    let bar_width = skin_upgrade_bar_width(skin_level_total);
+    let bar_rect = if bar_width > 0.0 && bar_width < clip_rect.width() {
+        Some(Rect::from_min_max(
+            Pos2::new(clip_rect.right() - bar_width, clip_rect.top()),
+            Pos2::new(clip_rect.right(), clip_rect.bottom()),
+        ))
+    } else {
+        None
+    };
+    let name_clip_rect = Rect::from_min_max(
+        clip_rect.min,
+        Pos2::new(
+            bar_rect
+                .map(|rect| (rect.left() - 8.0).max(clip_rect.left()))
+                .unwrap_or(clip_rect.right()),
+            clip_rect.bottom(),
+        ),
+    );
 
     let mut name_job = LayoutJob::default();
     name_job.append(
@@ -576,9 +589,9 @@ fn skin_cell(
     );
     let name_galley = ui.painter().layout_job(name_job);
     if name_galley.size().x > 0.0 {
-        painter.galley(
+        ui.painter().with_clip_rect(name_clip_rect).galley(
             Pos2::new(
-                clip_rect.left(),
+                name_clip_rect.left(),
                 rect.center().y - name_galley.size().y / 2.0,
             ),
             name_galley.clone(),
@@ -586,24 +599,11 @@ fn skin_cell(
         );
     }
 
-    if skin_level_total <= 1 {
+    let Some(bar_rect) = bar_rect else {
         return;
-    }
+    };
 
-    let bar_x = clip_rect.left() + name_galley.size().x + 6.0;
-    if bar_x >= clip_rect.right() {
-        return;
-    }
-
-    paint_skin_upgrade_bar(
-        &painter,
-        Rect::from_min_max(
-            Pos2::new(bar_x, clip_rect.top()),
-            Pos2::new(clip_rect.right(), clip_rect.bottom()),
-        ),
-        skin_level,
-        skin_level_total,
-    );
+    paint_skin_upgrade_bar(&painter, bar_rect, skin_level, skin_level_total, skin_color);
 }
 
 fn paint_skin_upgrade_bar(
@@ -611,9 +611,11 @@ fn paint_skin_upgrade_bar(
     rect: Rect,
     skin_level: usize,
     skin_level_total: usize,
+    skin_color: egui::Color32,
 ) {
     let clamped_level = skin_level.min(skin_level_total);
     let center_y = rect.center().y;
+    let inactive_color = skin_color.gamma_multiply(0.4);
 
     for index in 0..skin_level_total {
         let x = rect.left() + index as f32 * SKIN_UPGRADE_GAP;
@@ -627,15 +629,24 @@ fn paint_skin_upgrade_bar(
                     Pos2::new(x, center_y - SKIN_UPGRADE_BAR_HEIGHT / 2.0),
                     Pos2::new(x, center_y + SKIN_UPGRADE_BAR_HEIGHT / 2.0),
                 ],
-                Stroke::new(SKIN_UPGRADE_BAR_WIDTH, theme::TEXT_PRIMARY),
+                Stroke::new(SKIN_UPGRADE_BAR_WIDTH, skin_color),
             );
         } else {
             painter.circle_filled(
                 Pos2::new(x, center_y),
                 SKIN_UPGRADE_DOT_RADIUS,
-                theme::TEXT_MUTED,
+                inactive_color,
             );
         }
+    }
+}
+
+fn skin_upgrade_bar_width(skin_level_total: usize) -> f32 {
+    if skin_level_total <= 1 {
+        0.0
+    } else {
+        (skin_level_total.saturating_sub(1) as f32 * SKIN_UPGRADE_GAP)
+            + (SKIN_UPGRADE_DOT_RADIUS * 2.0).max(SKIN_UPGRADE_BAR_WIDTH)
     }
 }
 
@@ -869,30 +880,78 @@ fn last_played_section(ui: &mut Ui, players: &[PlayerDisplayData], local_puuid: 
 
     ui.add_space(8.0);
     ui.label(
-        RichText::new("SEEN BEFORE")
+        RichText::new("LAST SEEN")
             .font(theme::small_font())
             .color(theme::TEXT_MUTED),
     );
 
+    let my_team = local_team_id(players, local_puuid);
     for player in seen_before {
-        let age = format_history_age(&player.last_seen_at).unwrap_or_else(|| "previously".into());
-        let times = if player.times_seen_before == 1 {
-            "1 time".to_string()
-        } else {
-            format!("{} times", player.times_seen_before)
-        };
-        let name = if player.tag_line.is_empty() {
-            player.game_name.clone()
-        } else {
-            format!("{}#{}", player.game_name, player.tag_line)
-        };
-        let line = format!("{name} - last seen {age} ago ({times})");
+        let line = format_last_seen_summary(player, my_team);
         ui.label(
             RichText::new(line)
                 .font(theme::small_font())
                 .color(theme::TEXT_SECONDARY),
         );
     }
+}
+
+fn local_team_id<'a>(players: &'a [PlayerDisplayData], local_puuid: &str) -> &'a str {
+    players
+        .iter()
+        .find(|player| player.puuid == local_puuid)
+        .or_else(|| players.first())
+        .map(|player| player.team_id.as_str())
+        .unwrap_or("")
+}
+
+fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String {
+    let previous_name = display_full_name(&player.last_seen_game_name, &player.last_seen_tag_line);
+    let current_name = if player.is_incognito {
+        None
+    } else {
+        display_full_name(&player.game_name, &player.tag_line)
+    };
+    let relation = team_relation_label(player, my_team);
+    let agent = if player.agent_name.is_empty() {
+        "unknown agent".to_string()
+    } else {
+        player.agent_name.clone()
+    };
+
+    let identity = if player.is_incognito {
+        match previous_name {
+            Some(previous_name) => format!("Ran into them as {previous_name}"),
+            None => "Hidden now".to_string(),
+        }
+    } else {
+        match (previous_name, current_name) {
+            (Some(previous_name), Some(current_name)) if previous_name != current_name => {
+                format!("{previous_name} is now {current_name}")
+            }
+            (_, Some(current_name)) => current_name,
+            (Some(previous_name), None) => previous_name,
+            (None, None) => "Unknown player".to_string(),
+        }
+    };
+
+    let current_state = if player.is_incognito {
+        format!("Hidden now on {relation} as {agent}")
+    } else {
+        format!("On {relation} as {agent}")
+    };
+
+    let age = format_history_age(&player.last_seen_at)
+        .map(|age| format!("Last seen {age} ago"))
+        .unwrap_or_else(|| "Last seen previously".to_string());
+    let times_seen = player.times_seen_before.saturating_add(1);
+    let seen_count = if times_seen == 1 {
+        "Seen 1 time".to_string()
+    } else {
+        format!("Seen {times_seen} times")
+    };
+
+    format!("{identity}. {current_state}. {age}. {seen_count}.")
 }
 
 fn format_history_age(last_seen_at: &str) -> Option<String> {
@@ -909,6 +968,28 @@ fn format_history_age(last_seen_at: &str) -> Option<String> {
         Some(format!("{}h", seconds / 3_600))
     } else {
         Some(format!("{}d", seconds / 86_400))
+    }
+}
+
+fn display_full_name(game_name: &str, tag_line: &str) -> Option<String> {
+    let game_name = game_name.trim();
+    let tag_line = tag_line.trim();
+    if game_name.is_empty() {
+        None
+    } else if tag_line.is_empty() {
+        Some(game_name.to_string())
+    } else {
+        Some(format!("{game_name}#{tag_line}"))
+    }
+}
+
+fn team_relation_label(player: &PlayerDisplayData, my_team: &str) -> &'static str {
+    if my_team.is_empty() || player.team_id.is_empty() {
+        "unknown team"
+    } else if player.team_id == my_team {
+        "your team"
+    } else {
+        "enemy team"
     }
 }
 
@@ -988,8 +1069,8 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_rank_display, format_rank_name, format_server_id, format_skin_name,
-        leaderboard_column_visible, skin_column_visible, split_players_by_team,
+        format_last_seen_summary, format_rank_display, format_rank_name, format_server_id,
+        format_skin_name, leaderboard_column_visible, skin_column_visible, split_players_by_team,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1119,5 +1200,50 @@ mod tests {
     fn shortens_server_id_like_vry() {
         assert_eq!(format_server_id("aresriot.aws.ap.ne1"), "ap.ne1");
         assert_eq!(format_server_id("na"), "na");
+    }
+
+    #[test]
+    fn last_seen_hidden_player_keeps_current_name_private() {
+        let player = PlayerDisplayData {
+            game_name: "HiddenCurrent".into(),
+            tag_line: "NOW".into(),
+            team_id: "Red".into(),
+            agent_name: "Jett".into(),
+            is_incognito: true,
+            times_seen_before: 2,
+            last_seen_at: "2026-03-09 12:00:00".into(),
+            last_seen_game_name: "Example".into(),
+            last_seen_tag_line: "TAG".into(),
+            ..Default::default()
+        };
+
+        let summary = format_last_seen_summary(&player, "Blue");
+
+        assert!(summary.contains("Ran into them as Example#TAG"));
+        assert!(summary.contains("Hidden now on enemy team as Jett"));
+        assert!(summary.contains("Seen 3 times"));
+        assert!(!summary.contains("HiddenCurrent#NOW"));
+        assert!(!summary.contains("HiddenCurrent"));
+    }
+
+    #[test]
+    fn last_seen_visible_player_shows_rename_and_context() {
+        let player = PlayerDisplayData {
+            game_name: "Current".into(),
+            tag_line: "NOW".into(),
+            team_id: "Blue".into(),
+            agent_name: "Sova".into(),
+            times_seen_before: 1,
+            last_seen_at: "2026-03-09 12:00:00".into(),
+            last_seen_game_name: "Example".into(),
+            last_seen_tag_line: "TAG".into(),
+            ..Default::default()
+        };
+
+        let summary = format_last_seen_summary(&player, "Blue");
+
+        assert!(summary.contains("Example#TAG is now Current#NOW"));
+        assert!(summary.contains("On your team as Sova"));
+        assert!(summary.contains("Seen 2 times"));
     }
 }

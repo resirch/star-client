@@ -59,6 +59,10 @@ pub async fn run_data_loop(
     }
 
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut selected_overlay_weapon = {
+        let state = app_state.read().await;
+        players::normalize_overlay_weapon(&state.config.overlay.weapon).to_string()
+    };
 
     loop {
         poll_interval.tick().await;
@@ -77,6 +81,11 @@ pub async fn run_data_loop(
             let state = app_state.read().await;
             state.config.clone()
         };
+        let next_overlay_weapon = players::normalize_overlay_weapon(&config.overlay.weapon);
+        let overlay_weapon_changed = next_overlay_weapon != selected_overlay_weapon;
+        if overlay_weapon_changed {
+            selected_overlay_weapon = next_overlay_weapon.to_string();
+        }
 
         if config.behavior.discord_rpc != discord_rpc_enabled {
             discord_rpc_enabled = config.behavior.discord_rpc;
@@ -126,12 +135,16 @@ pub async fn run_data_loop(
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
-        if is_new_match || (state_changed && !match_id.is_empty()) {
+        if is_new_match
+            || (state_changed && !match_id.is_empty())
+            || (overlay_weapon_changed && !match_id.is_empty())
+        {
             // Phase 1: Fetch basic player info (names, agents, levels, teams)
             tracing::debug!(
-                "Player retrieval triggered: state_changed={}, is_new_match={}, game_state={:?}, match_id={}",
+                "Player retrieval triggered: state_changed={}, is_new_match={}, overlay_weapon_changed={}, game_state={:?}, match_id={}",
                 state_changed,
                 is_new_match,
+                overlay_weapon_changed,
                 new_state,
                 match_id
             );
@@ -171,13 +184,23 @@ pub async fn run_data_loop(
                         continue;
                     }
 
-                    player.times_seen_before = history.times_seen(&player.puuid);
-                    player.last_seen_at = history.last_seen(&player.puuid).unwrap_or_default();
+                    if let Some(encounter) = history.encounter(&player.puuid) {
+                        player.times_seen_before = encounter.times_seen;
+                        player.last_seen_at = encounter.last_seen_at;
+                        player.last_seen_game_name = encounter.game_name;
+                        player.last_seen_tag_line = encounter.tag_line;
+                    }
                 }
 
                 for p in &players_data {
-                    if p.puuid != local_puuid && !p.game_name.is_empty() {
-                        let _ = history.record_encounter(&p.puuid, &p.game_name, &p.tag_line);
+                    if p.puuid != local_puuid {
+                        let update_identity = !p.is_incognito && !p.game_name.is_empty();
+                        let _ = history.record_encounter(
+                            &p.puuid,
+                            &p.game_name,
+                            &p.tag_line,
+                            update_identity,
+                        );
                     }
                 }
             }

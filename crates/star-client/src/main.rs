@@ -38,7 +38,15 @@ fn main() {
     let tray = tray::SystemTray::new(Arc::clone(&app_state), Arc::clone(&quit_flag)).ok();
 
     let hotkey_mgr = HotkeyManager::new();
-    hotkey_mgr.start(&config.overlay.hotkey);
+    let app_state_hotkey = Arc::clone(&app_state);
+    hotkey_mgr.start(move || {
+        app_state_hotkey
+            .blocking_read()
+            .config
+            .overlay
+            .hotkey
+            .clone()
+    });
     let key_held = hotkey_mgr.key_held();
 
     let app_state_bg = Arc::clone(&app_state);

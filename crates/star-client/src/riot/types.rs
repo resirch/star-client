@@ -491,6 +491,8 @@ pub struct PlayerDisplayData {
     pub is_star_user: bool,
     pub times_seen_before: i32,
     pub last_seen_at: String,
+    pub last_seen_game_name: String,
+    pub last_seen_tag_line: String,
     #[serde(skip)]
     pub enriched: bool,
 }

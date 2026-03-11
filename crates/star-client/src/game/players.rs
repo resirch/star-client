@@ -4,6 +4,10 @@ use crate::riot::types::*;
 use anyhow::Result;
 use std::collections::HashMap;
 
+pub const OVERLAY_WEAPONS: &[&str] = &[
+    "Vandal", "Phantom", "Operator", "Sheriff", "Spectre", "Classic",
+];
+
 #[derive(Debug, Default)]
 struct EquippedSkin {
     name: String,
@@ -441,15 +445,8 @@ fn extract_weapon_skin(
     loadout: &PlayerLoadout,
     weapon_name: &str,
 ) -> EquippedSkin {
-    let weapon_uuid = match weapon_name.to_lowercase().as_str() {
-        "vandal" => "9c82e19d-4575-0200-1a81-3eacf00cf872",
-        "phantom" => "ee8e8d15-496b-07ac-f604-8f8488911e76",
-        "operator" => "a03b24d3-4319-996d-0f8c-94bbfba1dfc7",
-        "sheriff" => "e336c6b8-418d-9340-d77f-7a9e4cfe0702",
-        "spectre" => "462080d1-4035-2937-7c09-27aa2a5c27a7",
-        "classic" => "29a0cfab-485b-f5d5-779a-b59f85e204a8",
-        _ => "9c82e19d-4575-0200-1a81-3eacf00cf872", // Default to Vandal
-    };
+    let weapon_name = normalize_overlay_weapon(weapon_name);
+    let weapon_uuid = overlay_weapon_uuid(weapon_name);
 
     if let Some(items) = loadout.items() {
         if let Some(item) = items.get(weapon_uuid) {
@@ -488,6 +485,27 @@ fn extract_weapon_skin(
     }
 }
 
+pub fn normalize_overlay_weapon(name: &str) -> &'static str {
+    let trimmed = name.trim();
+    OVERLAY_WEAPONS
+        .iter()
+        .copied()
+        .find(|option| option.eq_ignore_ascii_case(trimmed))
+        .unwrap_or("Vandal")
+}
+
+fn overlay_weapon_uuid(weapon_name: &str) -> &'static str {
+    match normalize_overlay_weapon(weapon_name) {
+        "Vandal" => "9c82e19d-4575-0200-1a81-3eacf00cf872",
+        "Phantom" => "ee8e8d15-496b-07ac-f604-8f8488911e76",
+        "Operator" => "a03b24d3-4319-996d-0f8c-94bbfba1dfc7",
+        "Sheriff" => "e336c6b8-418d-9340-d77f-7a9e4cfe0702",
+        "Spectre" => "462080d1-4035-2937-7c09-27aa2a5c27a7",
+        "Classic" => "29a0cfab-485b-f5d5-779a-b59f85e204a8",
+        _ => "9c82e19d-4575-0200-1a81-3eacf00cf872",
+    }
+}
+
 fn standard_skin_name(weapon_name: &str) -> String {
     let weapon_name = weapon_name.trim();
     if weapon_name.is_empty() {
@@ -499,7 +517,10 @@ fn standard_skin_name(weapon_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_season_lookup, compact_act_label, extract_rank_data, SeasonLookup};
+    use super::{
+        build_season_lookup, compact_act_label, extract_rank_data, normalize_overlay_weapon,
+        SeasonLookup,
+    };
     use crate::riot::types::{
         ContentResponse, ContentSeason, MmrResponse, PlayerDisplayData, QueueSkill, SeasonalInfo,
     };
@@ -596,5 +617,11 @@ mod tests {
 
         assert_eq!(player.peak_rank, 12);
         assert!(player.peak_rank_act.is_empty());
+    }
+
+    #[test]
+    fn normalizes_overlay_weapon_choices() {
+        assert_eq!(normalize_overlay_weapon("phantom"), "Phantom");
+        assert_eq!(normalize_overlay_weapon("unknown"), "Vandal");
     }
 }

@@ -2,6 +2,14 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
+#[derive(Debug, Clone, Default)]
+pub struct EncounterRecord {
+    pub game_name: String,
+    pub tag_line: String,
+    pub times_seen: i32,
+    pub last_seen_at: String,
+}
+
 pub struct PlayerHistory {
     conn: Connection,
 }
@@ -26,36 +34,47 @@ impl PlayerHistory {
         Ok(Self { conn })
     }
 
-    pub fn record_encounter(&self, puuid: &str, game_name: &str, tag_line: &str) -> Result<()> {
+    pub fn record_encounter(
+        &self,
+        puuid: &str,
+        game_name: &str,
+        tag_line: &str,
+        update_identity: bool,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO encounters (puuid, game_name, tag_line, times_seen, last_seen)
-             VALUES (?1, ?2, ?3, 1, datetime('now'))
+             VALUES (
+                ?1,
+                CASE WHEN ?4 THEN ?2 ELSE '' END,
+                CASE WHEN ?4 THEN ?3 ELSE '' END,
+                1,
+                datetime('now')
+             )
              ON CONFLICT(puuid) DO UPDATE SET
-                game_name = ?2,
-                tag_line = ?3,
+                game_name = CASE WHEN ?4 THEN ?2 ELSE game_name END,
+                tag_line = CASE WHEN ?4 THEN ?3 ELSE tag_line END,
                 times_seen = times_seen + 1,
                 last_seen = datetime('now')",
-            rusqlite::params![puuid, game_name, tag_line],
+            rusqlite::params![puuid, game_name, tag_line, update_identity],
         )?;
         Ok(())
     }
 
-    pub fn times_seen(&self, puuid: &str) -> i32 {
+    pub fn encounter(&self, puuid: &str) -> Option<EncounterRecord> {
         self.conn
             .query_row(
-                "SELECT times_seen FROM encounters WHERE puuid = ?1",
+                "SELECT game_name, tag_line, times_seen, last_seen
+                 FROM encounters
+                 WHERE puuid = ?1",
                 rusqlite::params![puuid],
-                |row| row.get(0),
-            )
-            .unwrap_or(0)
-    }
-
-    pub fn last_seen(&self, puuid: &str) -> Option<String> {
-        self.conn
-            .query_row(
-                "SELECT last_seen FROM encounters WHERE puuid = ?1",
-                rusqlite::params![puuid],
-                |row| row.get(0),
+                |row| {
+                    Ok(EncounterRecord {
+                        game_name: row.get(0)?,
+                        tag_line: row.get(1)?,
+                        times_seen: row.get(2)?,
+                        last_seen_at: row.get(3)?,
+                    })
+                },
             )
             .ok()
     }
