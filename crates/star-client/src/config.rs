@@ -33,8 +33,8 @@ pub struct ColumnConfig {
     pub skin: bool,
     #[serde(default = "bool_true")]
     pub rr: bool,
-    #[serde(default = "bool_true", alias = "earned_rr")]
-    pub recent_results: bool,
+    #[serde(default = "bool_true", alias = "recent_results")]
+    pub earned_rr: bool,
     #[serde(default = "bool_true")]
     pub peak_rank: bool,
     #[serde(default = "bool_true")]
@@ -127,7 +127,7 @@ impl Default for ColumnConfig {
         Self {
             skin: true,
             rr: true,
-            recent_results: true,
+            earned_rr: true,
             peak_rank: true,
             previous_rank: true,
             leaderboard: true,
@@ -215,7 +215,20 @@ mod tests {
     use super::Config;
 
     #[test]
-    fn loads_legacy_earned_rr_column_key() {
+    fn loads_legacy_recent_results_column_key() {
+        let config: Config = toml::from_str(
+            r#"
+[columns]
+recent_results = false
+"#,
+        )
+        .unwrap();
+
+        assert!(!config.columns.earned_rr);
+    }
+
+    #[test]
+    fn loads_earned_rr_column_key() {
         let config: Config = toml::from_str(
             r#"
 [columns]
@@ -224,6 +237,6 @@ earned_rr = false
         )
         .unwrap();
 
-        assert!(!config.columns.recent_results);
+        assert!(!config.columns.earned_rr);
     }
 }

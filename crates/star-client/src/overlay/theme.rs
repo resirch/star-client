@@ -23,6 +23,9 @@ pub const VRY_DARK_RED: Color32 = Color32::from_rgb(64, 15, 10);
 pub const VRY_YELLOW: Color32 = Color32::from_rgb(140, 119, 11);
 pub const VRY_GREEN: Color32 = Color32::from_rgb(18, 204, 25);
 pub const VRY_WHITE: Color32 = Color32::from_rgb(255, 255, 255);
+pub const RR_PENALTY_NONE: Color32 = Color32::from_rgb(200, 200, 200);
+pub const RR_PENALTY_LOW: Color32 = Color32::from_rgb(255, 165, 0);
+pub const RR_PENALTY_HIGH: Color32 = Color32::from_rgb(255, 0, 0);
 pub const PARTY_COLORS: &[Color32] = &[
     Color32::from_rgb(100, 200, 255),
     Color32::from_rgb(255, 180, 100),
@@ -37,10 +40,6 @@ pub fn header_font() -> FontId {
 
 pub fn body_font() -> FontId {
     FontId::new(12.5, FontFamily::Proportional)
-}
-
-pub fn body_regular_font() -> FontId {
-    FontId::new(12.5, FontFamily::Name(REGULAR_FONT_FAMILY.into()))
 }
 
 pub fn small_font() -> FontId {
@@ -248,14 +247,6 @@ pub fn hs_color(pct: f64) -> Color32 {
     )
 }
 
-pub fn recent_result_color(result: char) -> Color32 {
-    match result {
-        'W' => VRY_GREEN,
-        'L' => STATUS_INGAME,
-        _ => VRY_WHITE,
-    }
-}
-
 pub fn rr_change_color(rr: i32) -> Color32 {
     if rr > 0 {
         VRY_GREEN
@@ -263,6 +254,16 @@ pub fn rr_change_color(rr: i32) -> Color32 {
         STATUS_INGAME
     } else {
         VRY_WHITE
+    }
+}
+
+pub fn rr_penalty_color(afk_penalty: i32) -> Color32 {
+    if afk_penalty == 0 {
+        RR_PENALTY_NONE
+    } else if afk_penalty <= 5 {
+        RR_PENALTY_LOW
+    } else {
+        RR_PENALTY_HIGH
     }
 }
 

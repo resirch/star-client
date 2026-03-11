@@ -209,7 +209,7 @@ pub async fn enrich_player(
 
     let comp_ok = match api.get_competitive_updates(&puuid).await {
         Ok(updates) => {
-            extract_recent_results(player, api, &updates).await;
+            extract_earned_rr(player, &updates);
             extract_performance_from_updates(player, api, &updates).await;
             true
         }
@@ -347,107 +347,49 @@ fn previous_rank_tier(
     0
 }
 
-async fn extract_recent_results(
-    display: &mut PlayerDisplayData,
-    api: &RiotApiClient,
-    updates: &CompetitiveUpdatesResponse,
-) {
-    let short_id = &display.puuid[..8.min(display.puuid.len())];
+fn extract_earned_rr(player: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
+    let short_id = &player.puuid[..8.min(player.puuid.len())];
     tracing::debug!(
         "Competitive updates for {}: {} matches",
         short_id,
         updates.matches.len()
     );
 
-    let mut recent_results = String::new();
+    if let Some(first) = updates.matches.first() {
+        player.earned_rr = earned_rr_from_update(first).unwrap_or(0);
+        player.afk_penalty = first.afk_penalty.unwrap_or(0);
+        player.has_comp_update = true;
 
-    for update in updates.matches.iter().take(5) {
-        let result = if let Some(match_id) = update.match_i_d.as_deref() {
-            match api.get_match_details(match_id).await {
-                Ok(details) => competitive_match_result(&display.puuid, &details)
-                    .or_else(|| competitive_update_result(update)),
-                Err(error) => {
-                    tracing::debug!(
-                        "Match details unavailable for {} match {}: {}",
-                        short_id,
-                        match_id,
-                        error
-                    );
-                    competitive_update_result(update)
-                }
-            }
-        } else {
-            competitive_update_result(update)
-        };
-
-        if let Some(result) = result {
-            recent_results.push(result);
-        }
+        tracing::debug!(
+            "Comp update for {}: earned_rr={:?} resolved_earned_rr={} afk_penalty={} tier_after={:?} tier_before={:?} rr_after={:?} rr_before={:?}",
+            short_id,
+            first.ranked_rating_earned,
+            player.earned_rr,
+            player.afk_penalty,
+            first.tier_after_update,
+            first.tier_before_update,
+            first.ranked_rating_after_update,
+            first.ranked_rating_before_update
+        );
     }
+}
 
-    display.recent_results = recent_results;
-
-    let recent_results = if display.recent_results.is_empty() {
-        "-"
-    } else {
-        display.recent_results.as_str()
+fn earned_rr_from_update(update: &CompetitiveUpdate) -> Option<i32> {
+    let afk_penalty = update.afk_penalty.unwrap_or(0);
+    let derived_delta = match (
+        update.ranked_rating_after_update,
+        update.ranked_rating_before_update,
+    ) {
+        (Some(after), Some(before)) => Some((after - before) + afk_penalty),
+        _ => None,
     };
 
-    tracing::debug!(
-        "Comp update summary for {}: recent_results={}",
-        short_id,
-        recent_results
-    );
-}
-
-fn competitive_match_result(puuid: &str, details: &MatchDetailsResponse) -> Option<char> {
-    let team_id = details
-        .players
-        .iter()
-        .find(|player| player.subject == puuid)?
-        .team_id
-        .as_deref()?;
-    let team = details
-        .teams
-        .as_ref()?
-        .iter()
-        .find(|team| team.team_id.eq_ignore_ascii_case(team_id))?;
-
-    Some(if team.won { 'W' } else { 'L' })
-}
-
-fn competitive_update_result(update: &CompetitiveUpdate) -> Option<char> {
-    match update.ranked_rating_earned.unwrap_or(0).cmp(&0) {
-        std::cmp::Ordering::Greater => Some('W'),
-        std::cmp::Ordering::Less => Some('L'),
-        std::cmp::Ordering::Equal => compare_update_progress(update),
+    match (update.ranked_rating_earned, derived_delta) {
+        (Some(earned), Some(derived)) if earned == 0 && derived != 0 => Some(derived),
+        (Some(earned), _) => Some(earned),
+        (None, Some(derived)) => Some(derived),
+        (None, None) => None,
     }
-}
-
-fn compare_update_progress(update: &CompetitiveUpdate) -> Option<char> {
-    match compare_optional_i32(update.tier_after_update, update.tier_before_update).or_else(|| {
-        compare_optional_i32(
-            update.ranked_rating_after_update,
-            update.ranked_rating_before_update,
-        )
-    }) {
-        Some(std::cmp::Ordering::Greater) => Some('W'),
-        Some(std::cmp::Ordering::Less) => Some('L'),
-        _ => None,
-    }
-}
-
-fn compare_optional_i32(after: Option<i32>, before: Option<i32>) -> Option<std::cmp::Ordering> {
-    Some(after?.cmp(&before?))
-}
-
-fn fallback_recent_results(updates: &CompetitiveUpdatesResponse) -> String {
-    updates
-        .matches
-        .iter()
-        .take(5)
-        .filter_map(competitive_update_result)
-        .collect()
 }
 
 async fn extract_performance_from_updates(
@@ -583,12 +525,11 @@ fn standard_skin_name(weapon_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_season_lookup, competitive_match_result, competitive_update_result,
-        extract_rank_data, fallback_recent_results, normalize_overlay_weapon, SeasonLookup,
+        build_season_lookup, earned_rr_from_update, extract_rank_data, normalize_overlay_weapon,
+        SeasonLookup,
     };
     use crate::riot::types::{
-        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason,
-        MatchDetailsResponse, MatchInfo, MatchPlayer, MatchTeam, MmrResponse, PlayerDisplayData,
+        CompetitiveUpdate, ContentResponse, ContentSeason, MmrResponse, PlayerDisplayData,
         QueueSkill, SeasonalInfo,
     };
     use std::collections::HashMap;
@@ -735,89 +676,41 @@ mod tests {
     }
 
     #[test]
-    fn builds_recent_results_from_latest_five_updates() {
-        let updates = CompetitiveUpdatesResponse {
-            matches: vec![
-                CompetitiveUpdate {
-                    ranked_rating_earned: Some(18),
-                    ..Default::default()
-                },
-                CompetitiveUpdate {
-                    ranked_rating_earned: Some(12),
-                    ..Default::default()
-                },
-                CompetitiveUpdate {
-                    ranked_rating_earned: Some(-20),
-                    ..Default::default()
-                },
-                CompetitiveUpdate {
-                    ranked_rating_earned: Some(-14),
-                    ..Default::default()
-                },
-                CompetitiveUpdate {
-                    ranked_rating_earned: Some(9),
-                    ..Default::default()
-                },
-                CompetitiveUpdate {
-                    ranked_rating_earned: Some(11),
-                    ..Default::default()
-                },
-            ],
-            subject: None,
+    fn keeps_direct_earned_rr_when_present() {
+        let update = CompetitiveUpdate {
+            ranked_rating_earned: Some(18),
+            ranked_rating_after_update: Some(62),
+            ranked_rating_before_update: Some(44),
+            afk_penalty: Some(0),
+            ..Default::default()
         };
 
-        assert_eq!(fallback_recent_results(&updates), "WWLLW");
+        assert_eq!(earned_rr_from_update(&update), Some(18));
     }
 
     #[test]
-    fn infers_result_from_progress_when_rr_delta_is_zero() {
+    fn reconstructs_earned_rr_from_progress_when_direct_value_is_zero() {
         let update = CompetitiveUpdate {
             ranked_rating_earned: Some(0),
             ranked_rating_after_update: Some(71),
             ranked_rating_before_update: Some(55),
+            afk_penalty: Some(0),
             ..Default::default()
         };
 
-        assert_eq!(competitive_update_result(&update), Some('W'));
+        assert_eq!(earned_rr_from_update(&update), Some(16));
     }
 
     #[test]
-    fn derives_match_result_from_match_details() {
-        let details = MatchDetailsResponse {
-            match_info: MatchInfo {
-                match_id: "match-1".to_string(),
-                map_id: "map-1".to_string(),
-                game_mode: Some("competitive".to_string()),
-                queue_id: Some("competitive".to_string()),
-                season_id: Some("season-1".to_string()),
-            },
-            players: vec![MatchPlayer {
-                subject: "player-1".to_string(),
-                team_id: Some("Blue".to_string()),
-                character_id: None,
-                stats: None,
-                competitive_tier: None,
-                player_card: None,
-                player_title: None,
-                party_id: None,
-            }],
-            teams: Some(vec![
-                MatchTeam {
-                    team_id: "Blue".to_string(),
-                    won: true,
-                    rounds_played: Some(24),
-                    rounds_won: Some(13),
-                },
-                MatchTeam {
-                    team_id: "Red".to_string(),
-                    won: false,
-                    rounds_played: Some(24),
-                    rounds_won: Some(11),
-                },
-            ]),
-            round_results: None,
+    fn reconstructs_pre_penalty_rr_from_progress_and_afk_penalty() {
+        let update = CompetitiveUpdate {
+            ranked_rating_earned: Some(0),
+            ranked_rating_after_update: Some(42),
+            ranked_rating_before_update: Some(50),
+            afk_penalty: Some(8),
+            ..Default::default()
         };
 
-        assert_eq!(competitive_match_result("player-1", &details), Some('W'));
+        assert_eq!(earned_rr_from_update(&update), Some(0));
     }
 }

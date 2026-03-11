@@ -20,7 +20,7 @@ const LB_W: f32 = 56.0;
 const KD_W: f32 = 48.0;
 const HS_W: f32 = 48.0;
 const WR_W: f32 = 50.0;
-const FORM_W: f32 = 78.0;
+const ERR_W: f32 = 74.0;
 const LVL_W: f32 = 38.0;
 const SKIN_W: f32 = 156.0;
 const ROW_H: f32 = 22.0;
@@ -151,8 +151,8 @@ fn table_width(config: &Config, show_leaderboard: bool, show_skin: bool) -> f32 
     if c.winrate {
         w += WR_W;
     }
-    if c.recent_results {
-        w += FORM_W;
+    if c.earned_rr {
+        w += ERR_W;
     }
     if c.level {
         w += LVL_W;
@@ -244,8 +244,8 @@ fn header_row(
         if c.winrate {
             hdr_cell(ui, "WR%", WR_W, &f, clr);
         }
-        if c.recent_results {
-            hdr_cell(ui, "LAST 5", FORM_W, &f, clr);
+        if c.earned_rr {
+            hdr_cell(ui, "ΔRR", ERR_W, &f, clr);
         }
         if c.level {
             hdr_cell(ui, "LVL", LVL_W, &f, clr);
@@ -482,12 +482,11 @@ fn player_row(
             text_cell(ui, &t, WR_W, &f, clr);
         }
 
-        if c.recent_results {
+        if c.earned_rr {
             if p.enriched {
-                let form_font = theme::body_regular_font();
-                recent_results_cell(ui, p, FORM_W, &form_font);
+                delta_rr_cell(ui, p, ERR_W, &f);
             } else {
-                text_cell(ui, &loading, FORM_W, &f, theme::TEXT_MUTED);
+                text_cell(ui, &loading, ERR_W, &f, theme::TEXT_MUTED);
             }
         }
 
@@ -753,7 +752,7 @@ fn skin_upgrade_bar_width(skin_level_total: usize) -> f32 {
     }
 }
 
-fn recent_results_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
+fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
     let mut job = LayoutJob::default();
     let base = TextFormat {
         font_id: font.clone(),
@@ -761,23 +760,44 @@ fn recent_results_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &e
         ..Default::default()
     };
 
-    if player.recent_results.is_empty() {
+    if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
         job.append("-", 0.0, base);
         layout_job_cell(ui, job, w, theme::TEXT_MUTED);
         return;
     }
 
-    for result in player.recent_results.chars() {
-        job.append(
-            &result.to_string(),
-            0.0,
-            TextFormat {
-                font_id: font.clone(),
-                color: theme::recent_result_color(result),
-                ..Default::default()
-            },
-        );
-    }
+    let rr_prefix = if player.earned_rr > 0 { "+" } else { "" };
+    let rr_text = format!("{rr_prefix}{}", player.earned_rr);
+    job.append(
+        &rr_text,
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::rr_change_color(player.earned_rr),
+            ..Default::default()
+        },
+    );
+
+    job.append(
+        " ",
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::TEXT_SECONDARY,
+            ..Default::default()
+        },
+    );
+
+    job.append(
+        &format!("({})", player.afk_penalty),
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::rr_penalty_color(player.afk_penalty),
+            ..Default::default()
+        },
+    );
+
     layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
 }
 

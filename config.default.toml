@@ -7,7 +7,7 @@ truncate_skins = true
 [columns]
 skin = true
 rr = true
-recent_results = true
+earned_rr = true
 peak_rank = true
 previous_rank = true
 leaderboard = true
