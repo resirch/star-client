@@ -443,7 +443,7 @@ fn player_row(
             } else {
                 theme::TEXT_MUTED
             };
-            text_cell(ui, &t, KD_W, &f, clr);
+            centered_text_cell(ui, &t, KD_W, &f, clr);
         }
 
         if c.headshot_percent {
@@ -461,7 +461,7 @@ fn player_row(
             } else {
                 theme::TEXT_MUTED
             };
-            text_cell(ui, &t, HS_W, &f, clr);
+            centered_text_cell(ui, &t, HS_W, &f, clr);
         }
 
         if c.winrate {
@@ -479,14 +479,14 @@ fn player_row(
             } else {
                 theme::TEXT_MUTED
             };
-            text_cell(ui, &t, WR_W, &f, clr);
+            centered_text_cell(ui, &t, WR_W, &f, clr);
         }
 
         if c.earned_rr {
             if p.enriched {
                 delta_rr_cell(ui, p, ERR_W, &f);
             } else {
-                text_cell(ui, &loading, ERR_W, &f, theme::TEXT_MUTED);
+                centered_text_cell(ui, &loading, ERR_W, &f, theme::TEXT_MUTED);
             }
         }
 
@@ -501,7 +501,7 @@ fn player_row(
             } else {
                 theme::TEXT_MUTED
             };
-            text_cell(ui, &t, LVL_W, &f, clr);
+            centered_text_cell(ui, &t, LVL_W, &f, clr);
         }
 
         if show_skin {
@@ -545,6 +545,28 @@ fn centered_text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, colo
         text,
         font.clone(),
         color,
+    );
+}
+
+fn centered_layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
+    let clip_rect = Rect::from_min_max(
+        Pos2::new(rect.left() + CELL_PAD, rect.top()),
+        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
+    );
+    let galley = ui.painter().layout_job(job);
+    if galley.size().x <= 0.0 {
+        return;
+    }
+
+    let painter = ui.painter().with_clip_rect(clip_rect);
+    painter.galley(
+        Pos2::new(
+            clip_rect.center().x - galley.size().x / 2.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        fallback_color,
     );
 }
 
@@ -762,7 +784,7 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
 
     if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
         job.append("-", 0.0, base);
-        layout_job_cell(ui, job, w, theme::TEXT_MUTED);
+        centered_layout_job_cell(ui, job, w, theme::TEXT_MUTED);
         return;
     }
 
@@ -798,7 +820,7 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
         },
     );
 
-    layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
+    centered_layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
 }
 
 fn state_color(state: &GameState) -> egui::Color32 {

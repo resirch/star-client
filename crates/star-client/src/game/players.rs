@@ -199,6 +199,7 @@ pub async fn enrich_player(
                 tracing::debug!("MMR response has no queue_skills for {}", short_id);
             }
             extract_rank_data(player, &mmr, current_season, season_lookup);
+            extract_latest_comp_update(player, mmr.latest_competitive_update.as_ref());
             has_data
         }
         Err(e) => {
@@ -209,7 +210,9 @@ pub async fn enrich_player(
 
     let comp_ok = match api.get_competitive_updates(&puuid).await {
         Ok(updates) => {
-            extract_earned_rr(player, &updates);
+            if !player.has_comp_update {
+                extract_earned_rr(player, &updates);
+            }
             extract_performance_from_updates(player, api, &updates).await;
             true
         }
@@ -293,6 +296,15 @@ fn extract_rank_data(
     }
 }
 
+fn extract_latest_comp_update(
+    player: &mut PlayerDisplayData,
+    latest_update: Option<&CompetitiveUpdate>,
+) {
+    if let Some(update) = latest_update {
+        apply_competitive_update(player, update);
+    }
+}
+
 fn ordered_season_ids(
     seasonal: &HashMap<String, SeasonalInfo>,
     season_lookup: &SeasonLookup,
@@ -348,7 +360,7 @@ fn previous_rank_tier(
 }
 
 fn extract_earned_rr(player: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
-    let short_id = &player.puuid[..8.min(player.puuid.len())];
+    let short_id = player.puuid[..8.min(player.puuid.len())].to_string();
     tracing::debug!(
         "Competitive updates for {}: {} matches",
         short_id,
@@ -356,9 +368,7 @@ fn extract_earned_rr(player: &mut PlayerDisplayData, updates: &CompetitiveUpdate
     );
 
     if let Some(first) = updates.matches.first() {
-        player.earned_rr = earned_rr_from_update(first).unwrap_or(0);
-        player.afk_penalty = first.afk_penalty.unwrap_or(0);
-        player.has_comp_update = true;
+        apply_competitive_update(player, first);
 
         tracing::debug!(
             "Comp update for {}: earned_rr={:?} resolved_earned_rr={} afk_penalty={} tier_after={:?} tier_before={:?} rr_after={:?} rr_before={:?}",
@@ -372,6 +382,12 @@ fn extract_earned_rr(player: &mut PlayerDisplayData, updates: &CompetitiveUpdate
             first.ranked_rating_before_update
         );
     }
+}
+
+fn apply_competitive_update(player: &mut PlayerDisplayData, update: &CompetitiveUpdate) {
+    player.earned_rr = earned_rr_from_update(update).unwrap_or(0);
+    player.afk_penalty = update.afk_penalty.unwrap_or(0);
+    player.has_comp_update = true;
 }
 
 fn earned_rr_from_update(update: &CompetitiveUpdate) -> Option<i32> {
@@ -525,8 +541,8 @@ fn standard_skin_name(weapon_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_season_lookup, earned_rr_from_update, extract_rank_data, normalize_overlay_weapon,
-        SeasonLookup,
+        apply_competitive_update, build_season_lookup, earned_rr_from_update,
+        extract_latest_comp_update, extract_rank_data, normalize_overlay_weapon, SeasonLookup,
     };
     use crate::riot::types::{
         CompetitiveUpdate, ContentResponse, ContentSeason, MmrResponse, PlayerDisplayData,
@@ -712,5 +728,38 @@ mod tests {
         };
 
         assert_eq!(earned_rr_from_update(&update), Some(0));
+    }
+
+    #[test]
+    fn extracts_delta_rr_from_latest_mmr_update() {
+        let mut player = PlayerDisplayData::default();
+        let update = CompetitiveUpdate {
+            ranked_rating_earned: Some(-17),
+            afk_penalty: Some(0),
+            ..Default::default()
+        };
+
+        extract_latest_comp_update(&mut player, Some(&update));
+
+        assert!(player.has_comp_update);
+        assert_eq!(player.earned_rr, -17);
+        assert_eq!(player.afk_penalty, 0);
+    }
+
+    #[test]
+    fn apply_competitive_update_reconstructs_from_progress() {
+        let mut player = PlayerDisplayData::default();
+        let update = CompetitiveUpdate {
+            ranked_rating_earned: Some(0),
+            ranked_rating_after_update: Some(63),
+            ranked_rating_before_update: Some(44),
+            afk_penalty: Some(0),
+            ..Default::default()
+        };
+
+        apply_competitive_update(&mut player, &update);
+
+        assert!(player.has_comp_update);
+        assert_eq!(player.earned_rr, 19);
     }
 }
