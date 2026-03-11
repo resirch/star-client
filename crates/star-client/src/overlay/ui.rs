@@ -16,7 +16,7 @@ const RANK_W_TRUNCATED: f32 = 56.0;
 const RR_W: f32 = 55.0;
 const PEAK_W: f32 = 82.0;
 const PREV_W: f32 = 82.0;
-const LB_W: f32 = 40.0;
+const LB_W: f32 = 56.0;
 const KD_W: f32 = 48.0;
 const HS_W: f32 = 48.0;
 const WR_W: f32 = 50.0;
@@ -82,7 +82,7 @@ pub fn render_overlay(
                         let (allies, enemies) = split_players_by_team(players, local_puuid);
 
                         if !allies.is_empty() {
-                            team_label(ui, "YOUR TEAM");
+                            team_label(ui, "YOUR TEAM", allies[0].team_id.as_str());
                             for p in &allies {
                                 player_row(ui, p, config, true, show_leaderboard, show_skin);
                             }
@@ -90,7 +90,7 @@ pub fn render_overlay(
 
                         if !enemies.is_empty() {
                             ui.add_space(6.0);
-                            team_label(ui, "ENEMY TEAM");
+                            team_label(ui, "ENEMY TEAM", enemies[0].team_id.as_str());
                             for p in &enemies {
                                 player_row(ui, p, config, false, show_leaderboard, show_skin);
                             }
@@ -226,11 +226,11 @@ fn header_row(
         if rr_column_visible(config) {
             hdr_cell(ui, "RR", RR_W, &f, clr);
         }
-        if c.peak_rank {
-            hdr_cell(ui, "PEAK", peak_column_width(config), &f, clr);
-        }
         if c.previous_rank {
             hdr_cell(ui, "PREV", previous_rank_column_width(config), &f, clr);
+        }
+        if c.peak_rank {
+            hdr_cell(ui, "PEAK", peak_column_width(config), &f, clr);
         }
         if show_leaderboard {
             hdr_cell(ui, "#", LB_W, &f, clr);
@@ -269,13 +269,12 @@ fn hdr_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::C
     }
 }
 
-fn team_label(ui: &mut Ui, text: &str) {
+fn team_label(ui: &mut Ui, text: &str, team_id: &str) {
     ui.add_space(2.0);
-    let is_ally = text.eq_ignore_ascii_case("YOUR TEAM");
     ui.label(
         RichText::new(text)
             .font(theme::small_font())
-            .color(theme::team_text_color(is_ally)),
+            .color(team_color(team_id, text.eq_ignore_ascii_case("YOUR TEAM"))),
     );
     ui.add_space(1.0);
 }
@@ -355,7 +354,7 @@ fn player_row(
             &display_name,
             NAME_W,
             &f,
-            theme::team_text_color(is_ally),
+            team_color(&p.team_id, is_ally),
         );
 
         // Rank (always shown)
@@ -375,26 +374,14 @@ fn player_row(
         if rr_column_visible(config) {
             let t = if p.enriched {
                 if p.current_rank > 0 {
-                    format!("{} RR", p.rr)
+                    p.rr.to_string()
                 } else {
                     "-".into()
                 }
             } else {
                 loading.clone()
             };
-            text_cell(ui, &t, RR_W, &f, theme::TEXT_SECONDARY);
-        }
-
-        if c.peak_rank {
-            if p.enriched {
-                if p.peak_rank > 0 {
-                    rank_cell(ui, p.peak_rank, config, peak_w, &f, rank_color(p.peak_rank));
-                } else {
-                    text_cell(ui, "-", peak_w, &f, rank_color(p.peak_rank));
-                }
-            } else {
-                text_cell(ui, &loading, peak_w, &f, theme::TEXT_MUTED);
-            }
+            centered_text_cell(ui, &t, RR_W, &f, theme::TEXT_SECONDARY);
         }
 
         if c.previous_rank {
@@ -413,6 +400,18 @@ fn player_row(
                 }
             } else {
                 text_cell(ui, &loading, prev_w, &f, theme::TEXT_MUTED);
+            }
+        }
+
+        if c.peak_rank {
+            if p.enriched {
+                if p.peak_rank > 0 {
+                    rank_cell(ui, p.peak_rank, config, peak_w, &f, rank_color(p.peak_rank));
+                } else {
+                    text_cell(ui, "-", peak_w, &f, rank_color(p.peak_rank));
+                }
+            } else {
+                text_cell(ui, &loading, peak_w, &f, theme::TEXT_MUTED);
             }
         }
 
@@ -537,6 +536,17 @@ fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::
         },
     );
     layout_job_cell(ui, job, w, color);
+}
+
+fn centered_text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        font.clone(),
+        color,
+    );
 }
 
 fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
@@ -832,7 +842,7 @@ fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
 
 fn format_rank_parts(tier: i32, config: &Config) -> (String, Option<String>) {
     if tier <= 0 {
-        return ("Unranked".to_string(), None);
+        return ("-".to_string(), None);
     }
 
     let base = if config.features.truncate_ranks {
@@ -1050,6 +1060,14 @@ fn team_relation_label(player: &PlayerDisplayData, my_team: &str) -> &'static st
     }
 }
 
+fn team_color(team_id: &str, is_ally: bool) -> egui::Color32 {
+    if team_id.is_empty() {
+        theme::team_text_color(is_ally)
+    } else {
+        theme::team_id_color(team_id)
+    }
+}
+
 fn format_skin_name(raw_skin_name: &str, weapon_name: &str, truncate_skins: bool) -> String {
     let raw_skin_name = raw_skin_name.trim();
     if raw_skin_name.is_empty() {
@@ -1248,6 +1266,14 @@ mod tests {
             format_rank_parts(16, &config),
             ("Platinum 2".to_string(), None)
         );
+    }
+
+    #[test]
+    fn formats_unranked_as_dash() {
+        let config = Config::default();
+
+        assert_eq!(format_rank_name(0, &config), "-");
+        assert_eq!(format_rank_parts(0, &config), ("-".to_string(), None));
     }
 
     #[test]

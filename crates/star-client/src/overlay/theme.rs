@@ -206,6 +206,16 @@ pub fn team_text_color(is_ally: bool) -> Color32 {
     }
 }
 
+pub fn team_id_color(team_id: &str) -> Color32 {
+    if team_id.eq_ignore_ascii_case("red") {
+        TEAM_RED
+    } else if team_id.eq_ignore_ascii_case("blue") {
+        TEAM_BLUE
+    } else {
+        TEXT_PRIMARY
+    }
+}
+
 pub fn winrate_color(pct: f64) -> Color32 {
     gradient_color(
         pct,
