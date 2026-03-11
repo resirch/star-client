@@ -5,24 +5,10 @@ use crate::overlay::theme;
 use crate::riot::types::{rank_color, PlayerDisplayData};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
+use egui::{Align, Align2, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 
 const PARTY_W: f32 = 8.0;
 const STAR_W: f32 = 18.0;
-const AGENT_W: f32 = 74.0;
-const NAME_W: f32 = 125.0;
-const RANK_W: f32 = 82.0;
-const RANK_W_TRUNCATED: f32 = 56.0;
-const RR_W: f32 = 55.0;
-const PEAK_W: f32 = 96.0;
-const PREV_W: f32 = 82.0;
-const LB_W: f32 = 56.0;
-const KD_W: f32 = 48.0;
-const HS_W: f32 = 48.0;
-const WR_W: f32 = 50.0;
-const ERR_W: f32 = 74.0;
-const LVL_W: f32 = 38.0;
-const SKIN_W: f32 = 156.0;
 const ROW_H: f32 = 22.0;
 const HDR_H: f32 = 20.0;
 const CELL_PAD: f32 = 3.0;
@@ -30,6 +16,35 @@ const SKIN_UPGRADE_GAP: f32 = 8.0;
 const SKIN_UPGRADE_BAR_HEIGHT: f32 = 9.0;
 const SKIN_UPGRADE_BAR_WIDTH: f32 = 1.5;
 const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
+const FRAME_INNER_MARGIN: f32 = 6.0;
+const RANK_CELL_GAP: f32 = 4.0;
+
+#[derive(Clone, Copy, Debug)]
+struct ColumnWidths {
+    party: f32,
+    star: f32,
+    agent: f32,
+    name: f32,
+    rank: f32,
+    rr: f32,
+    previous_rank: f32,
+    peak_rank: f32,
+    leaderboard: f32,
+    kd: f32,
+    headshot_percent: f32,
+    winrate: f32,
+    earned_rr: f32,
+    level: f32,
+    skin: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OverlayLayout {
+    widths: ColumnWidths,
+    show_leaderboard: bool,
+    show_skin: bool,
+    frame_width: f32,
+}
 
 pub fn render_overlay(
     ctx: &egui::Context,
@@ -40,9 +55,7 @@ pub fn render_overlay(
     config: &Config,
 ) {
     let columns = &config.columns;
-    let show_leaderboard = leaderboard_column_visible(config, players);
-    let show_skin = skin_column_visible(columns, game_state);
-    let tw = table_width(config, show_leaderboard, show_skin);
+    let layout = overlay_layout(ctx, game_state, players, columns, config);
     let y = 60.0;
 
     egui::Area::new(egui::Id::new("star_overlay"))
@@ -54,9 +67,11 @@ pub fn render_overlay(
                 .fill(theme::BG_COLOR)
                 .rounding(theme::table_rounding())
                 .stroke(theme::table_stroke())
-                .inner_margin(6.0)
+                .inner_margin(FRAME_INNER_MARGIN)
                 .show(ui, |ui: &mut Ui| {
-                    ui.set_min_width(tw);
+                    ui.set_width(layout.frame_width);
+                    ui.set_min_width(layout.frame_width);
+                    ui.set_max_width(layout.frame_width);
                     title_bar(ui, game_state, match_context, config);
                     if players.is_empty() {
                         ui.add_space(6.0);
@@ -70,9 +85,9 @@ pub fn render_overlay(
                         header_row(
                             ui,
                             columns,
-                            config,
-                            show_leaderboard,
-                            show_skin,
+                            layout.widths,
+                            layout.show_leaderboard,
+                            layout.show_skin,
                             &selected_weapon_label(&config.overlay.weapon),
                         );
                         ui.add_space(2.0);
@@ -82,7 +97,15 @@ pub fn render_overlay(
                         if !allies.is_empty() {
                             team_label(ui, "YOUR TEAM", allies[0].team_id.as_str());
                             for p in &allies {
-                                player_row(ui, p, config, true, show_leaderboard, show_skin);
+                                player_row(
+                                    ui,
+                                    p,
+                                    config,
+                                    layout.widths,
+                                    true,
+                                    layout.show_leaderboard,
+                                    layout.show_skin,
+                                );
                             }
                         }
 
@@ -90,7 +113,15 @@ pub fn render_overlay(
                             ui.add_space(6.0);
                             team_label(ui, "ENEMY TEAM", enemies[0].team_id.as_str());
                             for p in &enemies {
-                                player_row(ui, p, config, false, show_leaderboard, show_skin);
+                                player_row(
+                                    ui,
+                                    p,
+                                    config,
+                                    layout.widths,
+                                    false,
+                                    layout.show_leaderboard,
+                                    layout.show_skin,
+                                );
                             }
                         }
 
@@ -125,40 +156,351 @@ fn skin_column_visible(c: &ColumnConfig, state: &GameState) -> bool {
     c.skin && matches!(state, GameState::Ingame { .. })
 }
 
-fn table_width(config: &Config, show_leaderboard: bool, show_skin: bool) -> f32 {
-    let c = &config.columns;
-    let mut w = PARTY_W + STAR_W + AGENT_W + NAME_W + rank_column_width(config);
+fn overlay_layout(
+    ctx: &egui::Context,
+    game_state: &GameState,
+    players: &[PlayerDisplayData],
+    columns: &ColumnConfig,
+    config: &Config,
+) -> OverlayLayout {
+    let show_leaderboard = leaderboard_column_visible(config, players);
+    let show_skin = skin_column_visible(columns, game_state);
+    let widths = measure_column_widths(ctx, players, config, show_leaderboard, show_skin);
+    let frame_width = table_width(columns, widths, config, show_leaderboard, show_skin);
+
+    OverlayLayout {
+        widths,
+        show_leaderboard,
+        show_skin,
+        frame_width,
+    }
+}
+
+fn table_width(
+    columns: &ColumnConfig,
+    widths: ColumnWidths,
+    config: &Config,
+    show_leaderboard: bool,
+    show_skin: bool,
+) -> f32 {
+    let mut width = widths.party + widths.star + widths.agent + widths.name + widths.rank;
     if rr_column_visible(config) {
-        w += RR_W;
+        width += widths.rr;
     }
-    if c.peak_rank {
-        w += peak_column_width(config);
+    if columns.previous_rank {
+        width += widths.previous_rank;
     }
-    if c.previous_rank {
-        w += previous_rank_column_width(config);
+    if columns.peak_rank {
+        width += widths.peak_rank;
     }
     if show_leaderboard {
-        w += LB_W;
+        width += widths.leaderboard;
     }
-    if c.kd {
-        w += KD_W;
+    if columns.kd {
+        width += widths.kd;
     }
-    if c.headshot_percent {
-        w += HS_W;
+    if columns.headshot_percent {
+        width += widths.headshot_percent;
     }
-    if c.winrate {
-        w += WR_W;
+    if columns.winrate {
+        width += widths.winrate;
     }
-    if c.earned_rr {
-        w += ERR_W;
+    if columns.earned_rr {
+        width += widths.earned_rr;
     }
-    if c.level {
-        w += LVL_W;
+    if columns.level {
+        width += widths.level;
     }
     if show_skin {
-        w += SKIN_W;
+        width += widths.skin;
     }
-    w + 12.0
+
+    width
+}
+
+fn measure_column_widths(
+    ctx: &egui::Context,
+    players: &[PlayerDisplayData],
+    config: &Config,
+    show_leaderboard: bool,
+    show_skin: bool,
+) -> ColumnWidths {
+    let header_font = theme::small_font();
+    let body_font = theme::body_font();
+    let loading = loading_dots(ctx);
+    let weapon_label = selected_weapon_label(&config.overlay.weapon);
+
+    ColumnWidths {
+        party: PARTY_W,
+        star: STAR_W,
+        agent: text_column_width(
+            ctx,
+            "AGENT",
+            &header_font,
+            &body_font,
+            players.iter().map(|player| player.agent_name.clone()),
+        ),
+        name: text_column_width(
+            ctx,
+            "NAME",
+            &header_font,
+            &body_font,
+            players
+                .iter()
+                .map(|player| player_display_name(player, config)),
+        ),
+        rank: rank_column_width(ctx, players, config, &header_font, &body_font, &loading),
+        rr: text_column_width(
+            ctx,
+            "RR",
+            &header_font,
+            &body_font,
+            players
+                .iter()
+                .map(|player| rr_column_value(player, &loading)),
+        ),
+        previous_rank: previous_rank_column_width(
+            ctx,
+            players,
+            config,
+            &header_font,
+            &body_font,
+            &loading,
+        ),
+        peak_rank: peak_column_width(ctx, players, config, &header_font, &body_font, &loading),
+        leaderboard: if show_leaderboard {
+            text_column_width(
+                ctx,
+                "#",
+                &header_font,
+                &body_font,
+                players
+                    .iter()
+                    .map(|player| leaderboard_column_value(player, &loading)),
+            )
+        } else {
+            0.0
+        },
+        kd: text_column_width(
+            ctx,
+            "K/D",
+            &header_font,
+            &body_font,
+            players
+                .iter()
+                .map(|player| kd_column_value(player, &loading)),
+        ),
+        headshot_percent: text_column_width(
+            ctx,
+            "HS%",
+            &header_font,
+            &body_font,
+            players
+                .iter()
+                .map(|player| headshot_column_value(player, &loading)),
+        ),
+        winrate: text_column_width(
+            ctx,
+            "WR%",
+            &header_font,
+            &body_font,
+            players
+                .iter()
+                .map(|player| winrate_column_value(player, &loading)),
+        ),
+        earned_rr: text_column_width(
+            ctx,
+            "ΔRR",
+            &header_font,
+            &body_font,
+            players
+                .iter()
+                .map(|player| earned_rr_column_value(player, &loading)),
+        ),
+        level: text_column_width(
+            ctx,
+            "LVL",
+            &header_font,
+            &body_font,
+            players.iter().map(level_column_value),
+        ),
+        skin: skin_column_width(
+            ctx,
+            players,
+            config,
+            &weapon_label,
+            &header_font,
+            &body_font,
+            show_skin,
+        ),
+    }
+}
+
+fn text_column_width<I>(
+    ctx: &egui::Context,
+    header: &str,
+    header_font: &egui::FontId,
+    body_font: &egui::FontId,
+    values: I,
+) -> f32
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut width = measure_text_width(ctx, header_font, header);
+    for value in values {
+        width = width.max(measure_text_width(ctx, body_font, &value));
+    }
+
+    width + CELL_PAD * 2.0
+}
+
+fn rank_column_width(
+    ctx: &egui::Context,
+    players: &[PlayerDisplayData],
+    config: &Config,
+    header_font: &egui::FontId,
+    body_font: &egui::FontId,
+    loading: &str,
+) -> f32 {
+    rank_column_width_for(
+        ctx,
+        "RANK",
+        body_font,
+        header_font,
+        players.iter().map(|player| {
+            if player.enriched {
+                player.current_rank
+            } else {
+                -1
+            }
+        }),
+        config,
+        loading,
+    )
+}
+
+fn previous_rank_column_width(
+    ctx: &egui::Context,
+    players: &[PlayerDisplayData],
+    config: &Config,
+    header_font: &egui::FontId,
+    body_font: &egui::FontId,
+    loading: &str,
+) -> f32 {
+    rank_column_width_for(
+        ctx,
+        "PREV",
+        body_font,
+        header_font,
+        players.iter().map(|player| {
+            if player.enriched {
+                player.previous_rank
+            } else {
+                -1
+            }
+        }),
+        config,
+        loading,
+    )
+}
+
+fn peak_column_width(
+    ctx: &egui::Context,
+    players: &[PlayerDisplayData],
+    config: &Config,
+    header_font: &egui::FontId,
+    body_font: &egui::FontId,
+    loading: &str,
+) -> f32 {
+    rank_column_width_for(
+        ctx,
+        "PEAK",
+        body_font,
+        header_font,
+        players.iter().map(|player| {
+            if player.enriched {
+                player.peak_rank
+            } else {
+                -1
+            }
+        }),
+        config,
+        loading,
+    )
+}
+
+fn rank_column_width_for<I>(
+    ctx: &egui::Context,
+    header: &str,
+    body_font: &egui::FontId,
+    header_font: &egui::FontId,
+    tiers: I,
+    config: &Config,
+    loading: &str,
+) -> f32
+where
+    I: IntoIterator<Item = i32>,
+{
+    let mut width = measure_text_width(ctx, header_font, header);
+    for tier in tiers {
+        let value_width = if tier >= 0 {
+            measure_rank_width(ctx, tier, config, body_font)
+        } else {
+            measure_text_width(ctx, body_font, loading)
+        };
+        width = width.max(value_width);
+    }
+
+    width + CELL_PAD * 2.0
+}
+
+fn skin_column_width(
+    ctx: &egui::Context,
+    players: &[PlayerDisplayData],
+    config: &Config,
+    header: &str,
+    header_font: &egui::FontId,
+    body_font: &egui::FontId,
+    show_skin: bool,
+) -> f32 {
+    if !show_skin {
+        return 0.0;
+    }
+
+    let mut width = measure_text_width(ctx, header_font, header);
+    for player in players {
+        let skin_name = format_skin_name(
+            &player.skin_name,
+            &config.overlay.weapon,
+            config.overlay.truncate_skins,
+        );
+        let mut value_width = measure_text_width(ctx, body_font, &skin_name);
+        let bar_width = skin_upgrade_bar_width(player.skin_level_total);
+        if bar_width > 0.0 {
+            value_width += 8.0 + bar_width;
+        }
+        width = width.max(value_width);
+    }
+
+    width + CELL_PAD * 2.0
+}
+
+fn measure_text_width(ctx: &egui::Context, font: &egui::FontId, text: &str) -> f32 {
+    ctx.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    })
+}
+
+fn measure_rank_width(ctx: &egui::Context, tier: i32, config: &Config, font: &egui::FontId) -> f32 {
+    let (label, suffix) = format_rank_parts(tier, config);
+    let mut width = measure_text_width(ctx, font, &label);
+    if let Some(suffix) = suffix {
+        width += RANK_CELL_GAP + measure_text_width(ctx, font, &suffix);
+    }
+    width
 }
 
 fn title_bar(
@@ -198,7 +540,7 @@ fn title_bar(
 fn header_row(
     ui: &mut Ui,
     c: &ColumnConfig,
-    config: &Config,
+    widths: ColumnWidths,
     show_leaderboard: bool,
     show_skin: bool,
     skin_label: &str,
@@ -216,40 +558,40 @@ fn header_row(
         let f = theme::small_font();
         let clr = theme::TEXT_MUTED;
 
-        hdr_cell(ui, "", PARTY_W, &f, clr);
-        hdr_cell(ui, "", STAR_W, &f, clr);
-        hdr_cell(ui, "AGENT", AGENT_W, &f, clr);
-        hdr_cell(ui, "NAME", NAME_W, &f, clr);
-        hdr_cell(ui, "RANK", rank_column_width(config), &f, clr);
-        if rr_column_visible(config) {
-            hdr_cell(ui, "RR", RR_W, &f, clr);
+        hdr_cell(ui, "", widths.party, &f, clr);
+        hdr_cell(ui, "", widths.star, &f, clr);
+        hdr_cell(ui, "AGENT", widths.agent, &f, clr);
+        hdr_cell(ui, "NAME", widths.name, &f, clr);
+        hdr_cell(ui, "RANK", widths.rank, &f, clr);
+        if c.rr {
+            hdr_cell(ui, "RR", widths.rr, &f, clr);
         }
         if c.previous_rank {
-            hdr_cell(ui, "PREV", previous_rank_column_width(config), &f, clr);
+            hdr_cell(ui, "PREV", widths.previous_rank, &f, clr);
         }
         if c.peak_rank {
-            hdr_cell(ui, "PEAK", peak_column_width(config), &f, clr);
+            hdr_cell(ui, "PEAK", widths.peak_rank, &f, clr);
         }
         if show_leaderboard {
-            hdr_cell(ui, "#", LB_W, &f, clr);
+            hdr_cell(ui, "#", widths.leaderboard, &f, clr);
         }
         if c.kd {
-            hdr_cell(ui, "K/D", KD_W, &f, clr);
+            hdr_cell(ui, "K/D", widths.kd, &f, clr);
         }
         if c.headshot_percent {
-            hdr_cell(ui, "HS%", HS_W, &f, clr);
+            hdr_cell(ui, "HS%", widths.headshot_percent, &f, clr);
         }
         if c.winrate {
-            hdr_cell(ui, "WR%", WR_W, &f, clr);
+            hdr_cell(ui, "WR%", widths.winrate, &f, clr);
         }
         if c.earned_rr {
-            hdr_cell(ui, "ΔRR", ERR_W, &f, clr);
+            hdr_cell(ui, "ΔRR", widths.earned_rr, &f, clr);
         }
         if c.level {
-            hdr_cell(ui, "LVL", LVL_W, &f, clr);
+            hdr_cell(ui, "LVL", widths.level, &f, clr);
         }
         if show_skin {
-            hdr_cell(ui, skin_label, SKIN_W, &f, clr);
+            hdr_cell(ui, skin_label, widths.skin, &f, clr);
         }
     });
 }
@@ -281,14 +623,12 @@ fn player_row(
     ui: &mut Ui,
     p: &PlayerDisplayData,
     config: &Config,
+    widths: ColumnWidths,
     is_ally: bool,
     show_leaderboard: bool,
     show_skin: bool,
 ) {
     let c = &config.columns;
-    let rank_w = rank_column_width(config);
-    let peak_w = peak_column_width(config);
-    let prev_w = previous_rank_column_width(config);
     let bg = if is_ally {
         theme::ROW_BG_ALLY
     } else {
@@ -308,7 +648,8 @@ fn player_row(
         let loading = loading_dots(ui.ctx());
 
         // Party bar
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(PARTY_W, ROW_H), egui::Sense::hover());
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(widths.party, ROW_H), egui::Sense::hover());
         if p.party_number > 0 {
             let bar = Rect::from_center_size(rect.center(), Vec2::new(4.0, ROW_H - 4.0));
             ui.painter()
@@ -316,7 +657,7 @@ fn player_row(
         }
 
         // Star
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(STAR_W, ROW_H), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.star, ROW_H), egui::Sense::hover());
         if p.is_star_user {
             ui.painter().text(
                 rect.center(),
@@ -331,26 +672,17 @@ fn player_row(
         text_cell(
             ui,
             &p.agent_name,
-            AGENT_W,
+            widths.agent,
             &f,
             theme::agent_color(&p.agent_name),
         );
 
         // Name
-        let name = if p.is_incognito {
-            "---".into()
-        } else {
-            format!("{}#{}", p.game_name, p.tag_line)
-        };
-        let display_name = if config.features.truncate_names {
-            ellipsize(&name, 18)
-        } else {
-            name
-        };
+        let display_name = player_display_name(p, config);
         text_cell(
             ui,
             &display_name,
-            NAME_W,
+            widths.name,
             &f,
             team_color(&p.team_id, is_ally),
         );
@@ -361,25 +693,17 @@ fn player_row(
                 ui,
                 p.current_rank,
                 config,
-                rank_w,
+                widths.rank,
                 &f,
                 rank_color(p.current_rank),
             );
         } else {
-            text_cell(ui, &loading, rank_w, &f, theme::TEXT_MUTED);
+            text_cell(ui, &loading, widths.rank, &f, theme::TEXT_MUTED);
         }
 
         if rr_column_visible(config) {
-            let t = if p.enriched {
-                if p.current_rank > 0 {
-                    p.rr.to_string()
-                } else {
-                    "-".into()
-                }
-            } else {
-                loading.clone()
-            };
-            centered_text_cell(ui, &t, RR_W, &f, theme::TEXT_SECONDARY);
+            let t = rr_column_value(p, &loading);
+            centered_text_cell(ui, &t, widths.rr, &f, theme::TEXT_SECONDARY);
         }
 
         if c.previous_rank {
@@ -389,117 +713,94 @@ fn player_row(
                         ui,
                         p.previous_rank,
                         config,
-                        prev_w,
+                        widths.previous_rank,
                         &f,
                         rank_color(p.previous_rank),
                     );
                 } else {
-                    text_cell(ui, "-", prev_w, &f, rank_color(p.previous_rank));
+                    text_cell(
+                        ui,
+                        "-",
+                        widths.previous_rank,
+                        &f,
+                        rank_color(p.previous_rank),
+                    );
                 }
             } else {
-                text_cell(ui, &loading, prev_w, &f, theme::TEXT_MUTED);
+                text_cell(ui, &loading, widths.previous_rank, &f, theme::TEXT_MUTED);
             }
         }
 
         if c.peak_rank {
             if p.enriched {
                 if p.peak_rank > 0 {
-                    rank_cell(ui, p.peak_rank, config, peak_w, &f, rank_color(p.peak_rank));
+                    rank_cell(
+                        ui,
+                        p.peak_rank,
+                        config,
+                        widths.peak_rank,
+                        &f,
+                        rank_color(p.peak_rank),
+                    );
                 } else {
-                    text_cell(ui, "-", peak_w, &f, rank_color(p.peak_rank));
+                    text_cell(ui, "-", widths.peak_rank, &f, rank_color(p.peak_rank));
                 }
             } else {
-                text_cell(ui, &loading, peak_w, &f, theme::TEXT_MUTED);
+                text_cell(ui, &loading, widths.peak_rank, &f, theme::TEXT_MUTED);
             }
         }
 
         if show_leaderboard {
-            let t = if p.enriched {
-                if p.leaderboard_position > 0 {
-                    format!("#{}", p.leaderboard_position)
-                } else {
-                    "-".into()
-                }
-            } else {
-                loading.clone()
-            };
-            text_cell(ui, &t, LB_W, &f, theme::TEXT_SECONDARY);
+            let t = leaderboard_column_value(p, &loading);
+            text_cell(ui, &t, widths.leaderboard, &f, theme::TEXT_SECONDARY);
         }
 
         if c.kd {
-            let t = if p.enriched {
-                if p.kd > 0.0 {
-                    format!("{:.2}", p.kd)
-                } else {
-                    "-".into()
-                }
-            } else {
-                loading.clone()
-            };
+            let t = kd_column_value(p, &loading);
             let clr = if p.enriched {
                 theme::kd_color(p.kd)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, KD_W, &f, clr);
+            centered_text_cell(ui, &t, widths.kd, &f, clr);
         }
 
         if c.headshot_percent {
-            let t = if p.enriched {
-                if p.headshot_percent > 0.0 {
-                    format!("{:.0}%", p.headshot_percent)
-                } else {
-                    "-".into()
-                }
-            } else {
-                loading.clone()
-            };
+            let t = headshot_column_value(p, &loading);
             let clr = if p.enriched {
                 theme::hs_color(p.headshot_percent)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, HS_W, &f, clr);
+            centered_text_cell(ui, &t, widths.headshot_percent, &f, clr);
         }
 
         if c.winrate {
-            let t = if p.enriched {
-                if p.games > 0 {
-                    format!("{:.0}%", p.winrate)
-                } else {
-                    "-".into()
-                }
-            } else {
-                loading.clone()
-            };
+            let t = winrate_column_value(p, &loading);
             let clr = if p.enriched {
                 theme::winrate_color(p.winrate)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, WR_W, &f, clr);
+            centered_text_cell(ui, &t, widths.winrate, &f, clr);
         }
 
         if c.earned_rr {
             if p.enriched {
-                delta_rr_cell(ui, p, ERR_W, &f);
+                delta_rr_cell(ui, p, widths.earned_rr, &f);
             } else {
-                centered_text_cell(ui, &loading, ERR_W, &f, theme::TEXT_MUTED);
+                centered_text_cell(ui, &loading, widths.earned_rr, &f, theme::TEXT_MUTED);
             }
         }
 
         if c.level {
-            let t = if p.account_level > 0 {
-                p.account_level.to_string()
-            } else {
-                "-".into()
-            };
+            let t = level_column_value(p);
             let clr = if p.account_level > 0 {
                 theme::level_color(p.account_level)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, LVL_W, &f, clr);
+            centered_text_cell(ui, &t, widths.level, &f, clr);
         }
 
         if show_skin {
@@ -514,7 +815,7 @@ fn player_row(
                 p.skin_level,
                 p.skin_level_total,
                 p.skin_color,
-                SKIN_W,
+                widths.skin,
                 &f,
             );
         }
@@ -834,34 +1135,6 @@ fn rr_column_visible(config: &Config) -> bool {
     config.columns.rr
 }
 
-fn rank_column_width(config: &Config) -> f32 {
-    rank_label_column_width(config)
-}
-
-fn peak_column_width(config: &Config) -> f32 {
-    if config.features.truncate_ranks {
-        RANK_W_TRUNCATED
-    } else {
-        PEAK_W
-    }
-}
-
-fn previous_rank_column_width(config: &Config) -> f32 {
-    if config.features.truncate_ranks {
-        RANK_W_TRUNCATED
-    } else {
-        PREV_W
-    }
-}
-
-fn rank_label_column_width(config: &Config) -> f32 {
-    if config.features.truncate_ranks {
-        RANK_W_TRUNCATED
-    } else {
-        RANK_W
-    }
-}
-
 fn loading_dots(ctx: &egui::Context) -> String {
     // Keep it ASCII so it renders consistently on the overlay.
     let t = ctx.input(|i| i.time);
@@ -879,6 +1152,89 @@ fn selected_weapon_label(weapon_name: &str) -> String {
 
 fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
     format_rank_name(player.current_rank, config)
+}
+
+fn player_display_name(player: &PlayerDisplayData, config: &Config) -> String {
+    let name = if player.is_incognito {
+        "---".to_string()
+    } else {
+        format!("{}#{}", player.game_name, player.tag_line)
+    };
+
+    if config.features.truncate_names {
+        ellipsize(&name, 18)
+    } else {
+        name
+    }
+}
+
+fn rr_column_value(player: &PlayerDisplayData, loading: &str) -> String {
+    if !player.enriched {
+        loading.to_string()
+    } else if player.current_rank > 0 {
+        player.rr.to_string()
+    } else {
+        "-".to_string()
+    }
+}
+
+fn leaderboard_column_value(player: &PlayerDisplayData, loading: &str) -> String {
+    if !player.enriched {
+        loading.to_string()
+    } else if player.leaderboard_position > 0 {
+        format!("#{}", player.leaderboard_position)
+    } else {
+        "-".to_string()
+    }
+}
+
+fn kd_column_value(player: &PlayerDisplayData, loading: &str) -> String {
+    if !player.enriched {
+        loading.to_string()
+    } else if player.kd > 0.0 {
+        format!("{:.2}", player.kd)
+    } else {
+        "-".to_string()
+    }
+}
+
+fn headshot_column_value(player: &PlayerDisplayData, loading: &str) -> String {
+    if !player.enriched {
+        loading.to_string()
+    } else if player.headshot_percent > 0.0 {
+        format!("{:.0}%", player.headshot_percent)
+    } else {
+        "-".to_string()
+    }
+}
+
+fn winrate_column_value(player: &PlayerDisplayData, loading: &str) -> String {
+    if !player.enriched {
+        loading.to_string()
+    } else if player.games > 0 {
+        format!("{:.0}%", player.winrate)
+    } else {
+        "-".to_string()
+    }
+}
+
+fn earned_rr_column_value(player: &PlayerDisplayData, loading: &str) -> String {
+    if !player.enriched {
+        loading.to_string()
+    } else if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
+        "-".to_string()
+    } else {
+        let rr_prefix = if player.earned_rr > 0 { "+" } else { "" };
+        format!("{rr_prefix}{} ({})", player.earned_rr, player.afk_penalty)
+    }
+}
+
+fn level_column_value(player: &PlayerDisplayData) -> String {
+    if player.account_level > 0 {
+        player.account_level.to_string()
+    } else {
+        "-".to_string()
+    }
 }
 
 fn format_rank_parts(tier: i32, config: &Config) -> (String, Option<String>) {
@@ -1185,10 +1541,9 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_last_seen_summary, format_rank_display, format_rank_name, format_rank_parts,
-        format_server_id, format_skin_name, leaderboard_column_visible, peak_column_width,
-        previous_rank_column_width, rank_column_width, rr_column_visible, skin_column_visible,
-        split_players_by_team,
+        earned_rr_column_value, format_last_seen_summary, format_rank_display, format_rank_name,
+        format_rank_parts, format_server_id, format_skin_name, leaderboard_column_visible,
+        player_display_name, rr_column_visible, skin_column_visible, split_players_by_team,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1289,9 +1644,6 @@ mod tests {
 
         assert_eq!(format_rank_display(&player, &config), "IMM II");
         assert!(rr_column_visible(&config));
-        assert_eq!(rank_column_width(&config), 56.0);
-        assert_eq!(peak_column_width(&config), 56.0);
-        assert_eq!(previous_rank_column_width(&config), 56.0);
         assert_eq!(
             format_rank_parts(player.current_rank, &config),
             ("IMM".to_string(), Some("II".to_string()))
@@ -1300,9 +1652,6 @@ mod tests {
         config.features.truncate_ranks = false;
         config.features.roman_numerals = false;
         assert_eq!(format_rank_name(16, &config), "Platinum 2");
-        assert_eq!(rank_column_width(&config), 82.0);
-        assert_eq!(peak_column_width(&config), 96.0);
-        assert_eq!(previous_rank_column_width(&config), 82.0);
         assert_eq!(
             format_rank_parts(16, &config),
             ("Platinum 2".to_string(), None)
@@ -1339,6 +1688,54 @@ mod tests {
     fn shortens_server_id_like_vry() {
         assert_eq!(format_server_id("aresriot.aws.ap.ne1"), "ap.ne1");
         assert_eq!(format_server_id("na"), "na");
+    }
+
+    #[test]
+    fn display_name_respects_privacy_and_truncation() {
+        let mut config = Config::default();
+        config.features.truncate_names = true;
+
+        let private_player = PlayerDisplayData {
+            is_incognito: true,
+            ..Default::default()
+        };
+        assert_eq!(player_display_name(&private_player, &config), "---");
+
+        let long_name_player = PlayerDisplayData {
+            game_name: "VeryLongPlayerName".into(),
+            tag_line: "ABCDEFG".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            player_display_name(&long_name_player, &config),
+            "VeryLongPlayerN..."
+        );
+    }
+
+    #[test]
+    fn earned_rr_display_handles_positive_negative_and_empty_states() {
+        let loading = "...";
+        let loading_player = PlayerDisplayData::default();
+        assert_eq!(earned_rr_column_value(&loading_player, loading), loading);
+
+        let neutral_player = PlayerDisplayData {
+            enriched: true,
+            has_comp_update: false,
+            ..Default::default()
+        };
+        assert_eq!(earned_rr_column_value(&neutral_player, loading), "-");
+
+        let positive_player = PlayerDisplayData {
+            enriched: true,
+            has_comp_update: true,
+            earned_rr: 24,
+            afk_penalty: -3,
+            ..Default::default()
+        };
+        assert_eq!(
+            earned_rr_column_value(&positive_player, loading),
+            "+24 (-3)"
+        );
     }
 
     #[test]
