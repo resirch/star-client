@@ -2,6 +2,7 @@
 hotkey = "F2"
 weapon = "Vandal"
 opacity = 0.85
+truncate_skins = true
 
 [columns]
 skin = true

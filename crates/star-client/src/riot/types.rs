@@ -500,16 +500,16 @@ pub fn rank_name(tier: i32) -> &'static str {
 
 pub fn rank_color(tier: i32) -> egui::Color32 {
     match tier {
-        3..=5 => egui::Color32::from_rgb(110, 117, 130), // Iron
-        6..=8 => egui::Color32::from_rgb(180, 130, 80),  // Bronze
-        9..=11 => egui::Color32::from_rgb(175, 180, 190), // Silver
-        12..=14 => egui::Color32::from_rgb(218, 165, 32), // Gold
-        15..=17 => egui::Color32::from_rgb(50, 180, 180), // Platinum
-        18..=20 => egui::Color32::from_rgb(180, 100, 220), // Diamond
-        21..=23 => egui::Color32::from_rgb(50, 180, 100), // Ascendant
-        24..=26 => egui::Color32::from_rgb(200, 60, 80), // Immortal
-        27 => egui::Color32::from_rgb(255, 255, 150),    // Radiant
-        _ => egui::Color32::from_rgb(150, 150, 150),     // Unranked
+        3..=5 => egui::Color32::from_rgb(72, 69, 62),     // Iron
+        6..=8 => egui::Color32::from_rgb(187, 143, 90),   // Bronze
+        9..=11 => egui::Color32::from_rgb(174, 178, 178), // Silver
+        12..=14 => egui::Color32::from_rgb(197, 186, 63), // Gold
+        15..=17 => egui::Color32::from_rgb(24, 167, 185), // Platinum
+        18..=20 => egui::Color32::from_rgb(216, 100, 199), // Diamond
+        21..=23 => egui::Color32::from_rgb(24, 148, 82),  // Ascendant
+        24..=26 => egui::Color32::from_rgb(221, 68, 68),  // Immortal
+        27 => egui::Color32::from_rgb(255, 253, 205),     // Radiant
+        _ => egui::Color32::from_rgb(46, 46, 46),         // Unranked
     }
 }
 

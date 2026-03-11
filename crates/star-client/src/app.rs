@@ -47,11 +47,12 @@ pub async fn run_data_loop(
     };
 
     let mut discord = DiscordRpc::new();
-    {
+    let mut discord_rpc_enabled = {
         let state = app_state.read().await;
-        if state.config.behavior.discord_rpc {
-            discord.connect();
-        }
+        state.config.behavior.discord_rpc
+    };
+    if discord_rpc_enabled {
+        discord.connect();
     }
 
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -73,6 +74,16 @@ pub async fn run_data_loop(
             let state = app_state.read().await;
             state.config.clone()
         };
+
+        if config.behavior.discord_rpc != discord_rpc_enabled {
+            discord_rpc_enabled = config.behavior.discord_rpc;
+            if discord_rpc_enabled {
+                discord.connect();
+            } else {
+                discord.clear();
+                discord.disconnect();
+            }
+        }
 
         let state_changed;
         let match_id;
@@ -265,7 +276,7 @@ pub async fn run_data_loop(
             }
         }
 
-        if config.behavior.discord_rpc {
+        if discord_rpc_enabled {
             let state = app_state.read().await;
             let rank_name = state
                 .players

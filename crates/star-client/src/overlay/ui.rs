@@ -1,7 +1,8 @@
-use crate::config::ColumnConfig;
+use crate::config::{ColumnConfig, Config};
 use crate::game::state::GameState;
 use crate::overlay::theme;
 use crate::riot::types::{rank_color, PlayerDisplayData};
+use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Ui, Vec2};
 
 const PARTY_W: f32 = 8.0;
@@ -16,9 +17,9 @@ const LB_W: f32 = 40.0;
 const KD_W: f32 = 48.0;
 const HS_W: f32 = 48.0;
 const WR_W: f32 = 50.0;
-const ERR_W: f32 = 50.0;
+const ERR_W: f32 = 74.0;
 const LVL_W: f32 = 38.0;
-const SKIN_W: f32 = 130.0;
+const SKIN_W: f32 = 156.0;
 const ROW_H: f32 = 22.0;
 const HDR_H: f32 = 20.0;
 const CELL_PAD: f32 = 3.0;
@@ -27,12 +28,13 @@ pub fn render_overlay(
     ctx: &egui::Context,
     game_state: &GameState,
     players: &[PlayerDisplayData],
-    columns: &ColumnConfig,
+    config: &Config,
 ) {
     if players.is_empty() {
         return;
     }
 
+    let columns = &config.columns;
     let screen = ctx.screen_rect();
     let show_leaderboard = leaderboard_column_visible(columns, players);
     let tw = table_width(columns, show_leaderboard);
@@ -53,7 +55,12 @@ pub fn render_overlay(
                     ui.set_min_width(tw);
                     title_bar(ui, game_state);
                     ui.add_space(4.0);
-                    header_row(ui, columns, show_leaderboard);
+                    header_row(
+                        ui,
+                        columns,
+                        show_leaderboard,
+                        &selected_weapon_label(&config.overlay.weapon),
+                    );
                     ui.add_space(2.0);
 
                     let my_team = players.first().map(|p| p.team_id.as_str()).unwrap_or("");
@@ -64,7 +71,7 @@ pub fn render_overlay(
                     if !allies.is_empty() {
                         team_label(ui, "YOUR TEAM");
                         for p in &allies {
-                            player_row(ui, p, columns, true, show_leaderboard);
+                            player_row(ui, p, config, true, show_leaderboard);
                         }
                     }
 
@@ -72,7 +79,7 @@ pub fn render_overlay(
                         ui.add_space(6.0);
                         team_label(ui, "ENEMY TEAM");
                         for p in &enemies {
-                            player_row(ui, p, columns, false, show_leaderboard);
+                            player_row(ui, p, config, false, show_leaderboard);
                         }
                     }
                 });
@@ -129,13 +136,13 @@ fn title_bar(ui: &mut Ui, state: &GameState) {
             ui.label(
                 RichText::new(state.to_string())
                     .font(theme::small_font())
-                    .color(theme::TEXT_SECONDARY),
+                    .color(state_color(state)),
             );
         });
     });
 }
 
-fn header_row(ui: &mut Ui, c: &ColumnConfig, show_leaderboard: bool) {
+fn header_row(ui: &mut Ui, c: &ColumnConfig, show_leaderboard: bool, skin_label: &str) {
     let origin = ui.cursor().min;
     let full_w = ui.available_width();
     ui.painter().rect_filled(
@@ -182,7 +189,7 @@ fn header_row(ui: &mut Ui, c: &ColumnConfig, show_leaderboard: bool) {
             hdr_cell(ui, "LVL", LVL_W, &f, clr);
         }
         if c.skin {
-            hdr_cell(ui, "SKIN", SKIN_W, &f, clr);
+            hdr_cell(ui, skin_label, SKIN_W, &f, clr);
         }
     });
 }
@@ -202,10 +209,11 @@ fn hdr_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::C
 
 fn team_label(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
+    let is_ally = text.eq_ignore_ascii_case("YOUR TEAM");
     ui.label(
         RichText::new(text)
             .font(theme::small_font())
-            .color(theme::TEXT_MUTED),
+            .color(theme::team_text_color(is_ally)),
     );
     ui.add_space(1.0);
 }
@@ -213,10 +221,11 @@ fn team_label(ui: &mut Ui, text: &str) {
 fn player_row(
     ui: &mut Ui,
     p: &PlayerDisplayData,
-    c: &ColumnConfig,
+    config: &Config,
     is_ally: bool,
     show_leaderboard: bool,
 ) {
+    let c = &config.columns;
     let bg = if is_ally {
         theme::ROW_BG_ALLY
     } else {
@@ -270,7 +279,7 @@ fn player_row(
         } else {
             format!("{}#{}", p.game_name, p.tag_line)
         };
-        text_cell(ui, &name, NAME_W, &f, theme::TEXT_PRIMARY);
+        text_cell(ui, &name, NAME_W, &f, theme::team_text_color(is_ally));
 
         // Rank (always shown)
         if p.enriched {
@@ -386,21 +395,11 @@ fn player_row(
         }
 
         if c.earned_rr {
-            let t = if p.enriched {
-                if p.has_comp_update {
-                    format!("{}{}", if p.earned_rr > 0 { "+" } else { "" }, p.earned_rr)
-                } else {
-                    "-".into()
-                }
+            if p.enriched {
+                delta_rr_cell(ui, p, ERR_W, &f);
             } else {
-                loading.clone()
-            };
-            let clr = if p.enriched {
-                theme::rr_change_color(p.earned_rr)
-            } else {
-                theme::TEXT_MUTED
-            };
-            text_cell(ui, &t, ERR_W, &f, clr);
+                text_cell(ui, &loading, ERR_W, &f, theme::TEXT_MUTED);
+            }
         }
 
         if c.level {
@@ -409,24 +408,111 @@ fn player_row(
             } else {
                 "-".into()
             };
-            text_cell(ui, &t, LVL_W, &f, theme::TEXT_SECONDARY);
+            let clr = if p.account_level > 0 {
+                theme::level_color(p.account_level)
+            } else {
+                theme::TEXT_MUTED
+            };
+            text_cell(ui, &t, LVL_W, &f, clr);
         }
 
         if c.skin {
-            text_cell(ui, &p.skin_name, SKIN_W, &f, theme::TEXT_SECONDARY);
+            let skin_name = format_skin_name(
+                &p.skin_name,
+                &config.overlay.weapon,
+                config.overlay.truncate_skins,
+            );
+            text_cell(ui, &skin_name, SKIN_W, &f, theme::TEXT_SECONDARY);
         }
     });
 }
 
 fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
-    ui.painter().text(
-        Pos2::new(rect.left() + CELL_PAD, rect.center().y),
-        Align2::LEFT_CENTER,
+    let mut job = LayoutJob::default();
+    job.append(
         text,
-        font.clone(),
-        color,
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color,
+            ..Default::default()
+        },
     );
+    layout_job_cell(ui, job, w, color);
+}
+
+fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
+    let clip_rect = Rect::from_min_max(
+        Pos2::new(rect.left() + CELL_PAD, rect.top()),
+        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
+    );
+    let galley = ui.painter().layout_job(job);
+    if galley.size().x <= 0.0 {
+        return;
+    }
+
+    let painter = ui.painter().with_clip_rect(clip_rect);
+    painter.galley(
+        Pos2::new(clip_rect.left(), rect.center().y - galley.size().y / 2.0),
+        galley,
+        fallback_color,
+    );
+}
+
+fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
+    let mut job = LayoutJob::default();
+    let base = TextFormat {
+        font_id: font.clone(),
+        color: theme::TEXT_MUTED,
+        ..Default::default()
+    };
+
+    if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
+        job.append("-", 0.0, base);
+        layout_job_cell(ui, job, w, theme::TEXT_MUTED);
+        return;
+    }
+
+    let rr_prefix = if player.earned_rr > 0 { "+" } else { "" };
+    let rr_text = format!("{rr_prefix}{}", player.earned_rr);
+    job.append(
+        &rr_text,
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::rr_change_color(player.earned_rr),
+            ..Default::default()
+        },
+    );
+    job.append(
+        " ",
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::TEXT_SECONDARY,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!("({})", player.afk_penalty),
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::rr_penalty_color(player.afk_penalty),
+            ..Default::default()
+        },
+    );
+    layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
+}
+
+fn state_color(state: &GameState) -> egui::Color32 {
+    match state {
+        GameState::WaitingForClient => theme::STATUS_WAITING,
+        GameState::Menu => theme::STATUS_MENU,
+        GameState::Pregame { .. } => theme::STATUS_PREGAME,
+        GameState::Ingame { .. } => theme::STATUS_INGAME,
+    }
 }
 
 fn loading_dots(ctx: &egui::Context) -> String {
@@ -437,5 +523,82 @@ fn loading_dots(ctx: &egui::Context) -> String {
         0 => ".".to_string(),
         1 => "..".to_string(),
         _ => "...".to_string(),
+    }
+}
+
+fn selected_weapon_label(weapon_name: &str) -> String {
+    weapon_name.trim().to_ascii_uppercase()
+}
+
+fn format_skin_name(raw_skin_name: &str, weapon_name: &str, truncate_skins: bool) -> String {
+    let raw_skin_name = raw_skin_name.trim();
+    if raw_skin_name.is_empty() {
+        return String::new();
+    }
+    if !truncate_skins {
+        return raw_skin_name.to_string();
+    }
+
+    let shortened = strip_weapon_suffix(raw_skin_name, weapon_name).trim();
+    if shortened.is_empty() || shortened.eq_ignore_ascii_case("standard") {
+        return raw_skin_name.to_string();
+    }
+
+    let mut tokens = shortened.split_whitespace();
+    let Some(first) = tokens.next() else {
+        return raw_skin_name.to_string();
+    };
+
+    let numeric_suffix = shortened
+        .split_whitespace()
+        .rev()
+        .find(|token| token.chars().any(|ch| ch.is_ascii_digit()) && !token.eq_ignore_ascii_case(first));
+
+    match numeric_suffix {
+        Some(last) => format!("{first} {last}"),
+        None => first.to_string(),
+    }
+}
+
+fn strip_weapon_suffix<'a>(skin_name: &'a str, weapon_name: &str) -> &'a str {
+    let suffix = format!(" {}", weapon_name.trim());
+    if suffix.len() <= 1 {
+        return skin_name;
+    }
+
+    if skin_name
+        .to_ascii_lowercase()
+        .ends_with(&suffix.to_ascii_lowercase())
+    {
+        let trimmed_len = skin_name.len().saturating_sub(suffix.len());
+        skin_name[..trimmed_len].trim_end()
+    } else {
+        skin_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_skin_name;
+
+    #[test]
+    fn truncates_skin_names_like_vry() {
+        assert_eq!(
+            format_skin_name("Prelude to Chaos Vandal", "Vandal", true),
+            "Prelude"
+        );
+        assert_eq!(
+            format_skin_name("RGX 11z Pro Vandal", "Vandal", true),
+            "RGX 11z"
+        );
+        assert_eq!(format_skin_name("Standard", "Vandal", true), "Standard");
+    }
+
+    #[test]
+    fn keeps_full_skin_name_when_disabled() {
+        assert_eq!(
+            format_skin_name("Prelude to Chaos Vandal", "Vandal", false),
+            "Prelude to Chaos Vandal"
+        );
     }
 }

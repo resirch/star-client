@@ -33,14 +33,13 @@ fn main() {
     });
 
     let quit_flag = Arc::new(AtomicBool::new(false));
+    let app_state = Arc::new(RwLock::new(AppState::new(config.clone())));
 
-    let _tray = tray::SystemTray::new(Arc::clone(&quit_flag)).ok();
+    let tray = tray::SystemTray::new(Arc::clone(&app_state), Arc::clone(&quit_flag)).ok();
 
     let hotkey_mgr = HotkeyManager::new();
     hotkey_mgr.start(&config.overlay.hotkey);
     let key_held = hotkey_mgr.key_held();
-
-    let app_state = Arc::new(RwLock::new(AppState::new(config.clone())));
 
     let app_state_bg = Arc::clone(&app_state);
     let quit_flag_bg = Arc::clone(&quit_flag);
@@ -91,13 +90,14 @@ fn main() {
         });
     });
 
-    run_overlay(app_state, quit_flag, key_held);
+    run_overlay(app_state, quit_flag, key_held, tray);
 }
 
 fn run_overlay(
     app_state: Arc<RwLock<AppState>>,
     quit_flag: Arc<AtomicBool>,
     key_held: Arc<AtomicBool>,
+    tray: Option<tray::SystemTray>,
 ) {
     use egui_overlay::EguiOverlay;
 
@@ -105,8 +105,10 @@ fn run_overlay(
         app_state: Arc<RwLock<AppState>>,
         quit_flag: Arc<AtomicBool>,
         key_held: Arc<AtomicBool>,
+        tray: Option<tray::SystemTray>,
         initialized: bool,
         shown: bool,
+        topmost_active: bool,
     }
 
     impl EguiOverlay for StarOverlay {
@@ -186,18 +188,29 @@ fn run_overlay(
                 return;
             }
 
+            if let Some(tray) = &self.tray {
+                tray.poll_events(&self.app_state);
+            }
+
             let hotkey_active = self.key_held.load(Ordering::Relaxed);
+            let mut should_be_topmost = false;
 
             if let Ok(state) = self.app_state.try_read() {
                 let visible = state.auto_visible || hotkey_active;
-                if visible {
+                should_be_topmost = visible && valorant_is_focused();
+                if should_be_topmost {
                     overlay::ui::render_overlay(
                         egui_context,
                         &state.game_state,
                         &state.players,
-                        &state.config.columns,
+                        &state.config,
                     );
                 }
+            }
+
+            if should_be_topmost != self.topmost_active {
+                set_overlay_topmost(glfw_backend, should_be_topmost);
+                self.topmost_active = should_be_topmost;
             }
 
             egui_context.request_repaint_after(std::time::Duration::from_millis(16));
@@ -208,8 +221,10 @@ fn run_overlay(
         app_state,
         quit_flag,
         key_held,
+        tray,
         initialized: false,
         shown: false,
+        topmost_active: false,
     });
 }
 
@@ -260,7 +275,7 @@ fn start_overlay<T: egui_overlay::EguiOverlay + 'static>(user_data: T) {
 }
 
 fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend) {
-    glfw_backend.window.set_floating(true);
+    glfw_backend.window.set_floating(false);
 
     #[cfg(target_os = "windows")]
     {
@@ -281,10 +296,41 @@ fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::Gl
                     (ex_style | WS_EX_TOOLWINDOW as isize | WS_EX_TRANSPARENT as isize)
                         & !(WS_EX_APPWINDOW as isize),
                 );
+            }
+        }
 
+        tracing::info!(
+            "Window initialized: {}x{}, hidden from taskbar",
+            screen_w,
+            screen_h
+        );
+    }
+
+    glfw_backend.set_passthrough(true);
+}
+
+fn set_overlay_topmost(
+    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+    topmost: bool,
+) {
+    glfw_backend.window.set_floating(topmost);
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+
+        let hwnd = glfw_backend.window.get_win32_window();
+        if !hwnd.is_null() {
+            unsafe {
                 SetWindowPos(
                     hwnd,
-                    HWND_TOPMOST,
+                    if topmost {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    },
                     0,
                     0,
                     0,
@@ -293,13 +339,56 @@ fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::Gl
                 );
             }
         }
-
-        tracing::info!(
-            "Window initialized: {}x{}, topmost, hidden from taskbar",
-            screen_w,
-            screen_h
-        );
     }
+}
 
-    glfw_backend.set_passthrough(true);
+#[cfg(target_os = "windows")]
+fn valorant_is_focused() -> bool {
+    use std::path::Path;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return false;
+        }
+
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+
+        let mut buffer = vec![0u16; 1024];
+        let mut len = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+
+        if ok == 0 || len == 0 {
+            return false;
+        }
+
+        let exe_path = String::from_utf16_lossy(&buffer[..len as usize]);
+        Path::new(&exe_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("VALORANT-Win64-Shipping.exe"))
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn valorant_is_focused() -> bool {
+    true
 }

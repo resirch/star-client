@@ -21,6 +21,8 @@ pub struct OverlayConfig {
     pub weapon: String,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    #[serde(default = "bool_true")]
+    pub truncate_skins: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +100,7 @@ impl Default for OverlayConfig {
             hotkey: default_hotkey(),
             weapon: default_weapon(),
             opacity: default_opacity(),
+            truncate_skins: true,
         }
     }
 }
@@ -161,6 +164,15 @@ impl Config {
         let dirs =
             directories::ProjectDirs::from("dev", "star", "star-client").expect("home directory");
         dirs.config_dir().join("config.toml")
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, toml::to_string_pretty(self)?)?;
+        Ok(())
     }
 
     pub fn data_dir() -> PathBuf {

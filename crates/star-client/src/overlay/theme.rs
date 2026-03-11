@@ -10,6 +10,19 @@ pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(230, 230, 240);
 pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(160, 160, 175);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(100, 100, 115);
 pub const STAR_COLOR: Color32 = Color32::from_rgb(255, 215, 0);
+pub const TEAM_RED: Color32 = Color32::from_rgb(238, 77, 77);
+pub const TEAM_BLUE: Color32 = Color32::from_rgb(76, 151, 237);
+pub const STATUS_INGAME: Color32 = Color32::from_rgb(241, 39, 39);
+pub const STATUS_PREGAME: Color32 = Color32::from_rgb(103, 237, 76);
+pub const STATUS_MENU: Color32 = Color32::from_rgb(238, 241, 54);
+pub const STATUS_WAITING: Color32 = Color32::from_rgb(255, 165, 0);
+pub const VRY_DARK_RED: Color32 = Color32::from_rgb(64, 15, 10);
+pub const VRY_YELLOW: Color32 = Color32::from_rgb(140, 119, 11);
+pub const VRY_GREEN: Color32 = Color32::from_rgb(18, 204, 25);
+pub const VRY_WHITE: Color32 = Color32::from_rgb(255, 255, 255);
+pub const RR_PENALTY_NONE: Color32 = Color32::from_rgb(200, 200, 200);
+pub const RR_PENALTY_LOW: Color32 = Color32::from_rgb(255, 165, 0);
+pub const RR_PENALTY_HIGH: Color32 = Color32::from_rgb(255, 0, 0);
 pub const PARTY_COLORS: &[Color32] = &[
     Color32::from_rgb(100, 200, 255),
     Color32::from_rgb(255, 180, 100),
@@ -17,9 +30,6 @@ pub const PARTY_COLORS: &[Color32] = &[
     Color32::from_rgb(100, 255, 180),
     Color32::from_rgb(255, 130, 180),
 ];
-
-pub const WIN_COLOR: Color32 = Color32::from_rgb(100, 220, 100);
-pub const LOSS_COLOR: Color32 = Color32::from_rgb(220, 100, 100);
 
 pub fn header_font() -> FontId {
     FontId::new(13.0, FontFamily::Proportional)
@@ -49,43 +59,77 @@ pub fn row_padding() -> Vec2 {
     Vec2::new(8.0, 4.0)
 }
 
-pub fn winrate_color(pct: f64) -> Color32 {
-    if pct >= 55.0 {
-        WIN_COLOR
-    } else if pct <= 45.0 {
-        LOSS_COLOR
+pub fn team_text_color(is_ally: bool) -> Color32 {
+    if is_ally {
+        TEAM_BLUE
     } else {
-        TEXT_PRIMARY
+        TEAM_RED
     }
+}
+
+pub fn winrate_color(pct: f64) -> Color32 {
+    gradient_color(
+        pct,
+        &[
+            (0.0, 45.0, VRY_DARK_RED, VRY_YELLOW),
+            (45.0, 55.0, VRY_YELLOW, VRY_GREEN),
+            (55.0, 100.0, VRY_GREEN, VRY_WHITE),
+        ],
+    )
 }
 
 pub fn kd_color(kd: f64) -> Color32 {
     if kd >= 1.2 {
-        WIN_COLOR
+        VRY_GREEN
     } else if kd <= 0.8 {
-        LOSS_COLOR
+        STATUS_INGAME
     } else {
         TEXT_PRIMARY
     }
 }
 
 pub fn hs_color(pct: f64) -> Color32 {
-    if pct >= 25.0 {
-        WIN_COLOR
-    } else if pct <= 15.0 {
-        LOSS_COLOR
-    } else {
-        TEXT_PRIMARY
-    }
+    gradient_color(
+        pct,
+        &[
+            (0.0, 25.0, VRY_DARK_RED, VRY_YELLOW),
+            (25.0, 50.0, VRY_YELLOW, VRY_GREEN),
+            (50.0, 100.0, VRY_GREEN, VRY_WHITE),
+        ],
+    )
 }
 
 pub fn rr_change_color(rr: i32) -> Color32 {
     if rr > 0 {
-        WIN_COLOR
+        VRY_GREEN
     } else if rr < 0 {
-        LOSS_COLOR
+        STATUS_INGAME
     } else {
-        TEXT_MUTED
+        VRY_WHITE
+    }
+}
+
+pub fn rr_penalty_color(afk_penalty: i32) -> Color32 {
+    if afk_penalty == 0 {
+        RR_PENALTY_NONE
+    } else if afk_penalty <= 5 {
+        RR_PENALTY_LOW
+    } else {
+        RR_PENALTY_HIGH
+    }
+}
+
+pub fn level_color(level: i32) -> Color32 {
+    if level >= 400 {
+        Color32::from_rgb(102, 212, 212)
+    } else if level >= 300 {
+        Color32::from_rgb(207, 207, 76)
+    } else if level >= 200 {
+        Color32::from_rgb(71, 71, 204)
+    } else if level >= 100 {
+        Color32::from_rgb(241, 144, 54)
+    } else {
+        Color32::from_rgb(211, 211, 211)
     }
 }
 
@@ -135,4 +179,29 @@ pub fn party_color(party_number: i32) -> Color32 {
         let idx = ((party_number - 1) as usize) % PARTY_COLORS.len();
         PARTY_COLORS[idx]
     }
+}
+
+fn gradient_color(value: f64, ranges: &[(f64, f64, Color32, Color32)]) -> Color32 {
+    let value = value.clamp(0.0, 100.0);
+
+    for (start, end, from, to) in ranges {
+        if value >= *start && value <= *end {
+            let span = (*end - *start).max(f64::EPSILON);
+            let t = ((value - *start) / span) as f32;
+            return lerp_color(*from, *to, t);
+        }
+    }
+
+    TEXT_PRIMARY
+}
+
+fn lerp_color(from: Color32, to: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |a: u8, b: u8| a as f32 + (b as f32 - a as f32) * t;
+
+    Color32::from_rgb(
+        lerp(from.r(), to.r()).round() as u8,
+        lerp(from.g(), to.g()).round() as u8,
+        lerp(from.b(), to.b()).round() as u8,
+    )
 }

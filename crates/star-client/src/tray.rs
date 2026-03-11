@@ -1,18 +1,148 @@
+use crate::app::AppState;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tokio::sync::RwLock;
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
 pub struct SystemTray {
     _tray: TrayIcon,
     quit_flag: Arc<AtomicBool>,
+    toggle_items: HashMap<&'static str, CheckMenuItem>,
+    quit_id: tray_icon::menu::MenuId,
 }
 
 impl SystemTray {
-    pub fn new(quit_flag: Arc<AtomicBool>) -> anyhow::Result<Self> {
+    pub fn new(
+        app_state: Arc<RwLock<AppState>>,
+        quit_flag: Arc<AtomicBool>,
+    ) -> anyhow::Result<Self> {
+        let config = {
+            let state = app_state.blocking_read();
+            state.config.clone()
+        };
+
         let menu = Menu::new();
-        let quit_item = MenuItem::new("Quit Star Client", true, None);
+        let mut toggle_items: HashMap<&'static str, CheckMenuItem> = HashMap::new();
+
+        let columns_menu = Submenu::new("Columns", true);
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.skin",
+            "Skin",
+            config.columns.skin,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.rr",
+            "RR",
+            config.columns.rr,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.earned_rr",
+            "Earned RR",
+            config.columns.earned_rr,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.peak_rank",
+            "Peak Rank",
+            config.columns.peak_rank,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.previous_rank",
+            "Previous Rank",
+            config.columns.previous_rank,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.leaderboard",
+            "Leaderboard",
+            config.columns.leaderboard,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.headshot_percent",
+            "Headshot %",
+            config.columns.headshot_percent,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.winrate",
+            "Winrate",
+            config.columns.winrate,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.kd",
+            "K/D",
+            config.columns.kd,
+        )?;
+        append_toggle(
+            &columns_menu,
+            &mut toggle_items,
+            "columns.level",
+            "Level",
+            config.columns.level,
+        )?;
+
+        let behavior_menu = Submenu::new("Behavior", true);
+        append_toggle(
+            &behavior_menu,
+            &mut toggle_items,
+            "behavior.auto_show_pregame",
+            "Auto Show Pregame",
+            config.behavior.auto_show_pregame,
+        )?;
+        append_toggle(
+            &behavior_menu,
+            &mut toggle_items,
+            "behavior.auto_hide_ingame",
+            "Auto Hide Ingame",
+            config.behavior.auto_hide_ingame,
+        )?;
+        append_toggle(
+            &behavior_menu,
+            &mut toggle_items,
+            "behavior.party_finder",
+            "Party Finder",
+            config.behavior.party_finder,
+        )?;
+        append_toggle(
+            &behavior_menu,
+            &mut toggle_items,
+            "behavior.discord_rpc",
+            "Discord RPC",
+            config.behavior.discord_rpc,
+        )?;
+
+        let display_menu = Submenu::new("Display", true);
+        append_toggle(
+            &display_menu,
+            &mut toggle_items,
+            "overlay.truncate_skins",
+            "Truncate Skins",
+            config.overlay.truncate_skins,
+        )?;
+
+        let quit_item = MenuItem::with_id("quit", "Quit Star Client", true, None);
         let quit_id = quit_item.id().clone();
+        menu.append(&columns_menu)?;
+        menu.append(&behavior_menu)?;
+        menu.append(&display_menu)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
 
         let icon = load_tray_icon();
@@ -23,25 +153,120 @@ impl SystemTray {
             .with_icon(icon)
             .build()?;
 
-        let quit_flag_clone = Arc::clone(&quit_flag);
-        std::thread::spawn(move || loop {
-            if let Ok(event) = MenuEvent::receiver().try_recv() {
-                if event.id() == &quit_id {
-                    quit_flag_clone.store(true, Ordering::Relaxed);
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        });
-
         Ok(Self {
             _tray: tray,
             quit_flag,
+            toggle_items,
+            quit_id,
         })
     }
 
-    pub fn should_quit(&self) -> bool {
-        self.quit_flag.load(Ordering::Relaxed)
+    pub fn poll_events(&self, app_state: &Arc<RwLock<AppState>>) {
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id() == &self.quit_id {
+                self.quit_flag.store(true, Ordering::Relaxed);
+                continue;
+            }
+
+            if let Some(next_value) = toggle_setting(app_state, event.id().as_ref()) {
+                if let Some(item) = self.toggle_items.get(event.id().as_ref()) {
+                    item.set_checked(next_value);
+                }
+            }
+        }
     }
+}
+
+fn append_toggle(
+    menu: &Submenu,
+    toggle_items: &mut HashMap<&'static str, CheckMenuItem>,
+    id: &'static str,
+    label: &str,
+    checked: bool,
+) -> anyhow::Result<()> {
+    let item = CheckMenuItem::with_id(id, label, true, checked, None);
+    menu.append(&item)?;
+    toggle_items.insert(id, item);
+    Ok(())
+}
+
+fn toggle_setting(app_state: &Arc<RwLock<AppState>>, id: &str) -> Option<bool> {
+    let next_value = {
+        let mut state = app_state.blocking_write();
+        match id {
+            "columns.skin" => {
+                state.config.columns.skin = !state.config.columns.skin;
+                state.config.columns.skin
+            }
+            "columns.rr" => {
+                state.config.columns.rr = !state.config.columns.rr;
+                state.config.columns.rr
+            }
+            "columns.earned_rr" => {
+                state.config.columns.earned_rr = !state.config.columns.earned_rr;
+                state.config.columns.earned_rr
+            }
+            "columns.peak_rank" => {
+                state.config.columns.peak_rank = !state.config.columns.peak_rank;
+                state.config.columns.peak_rank
+            }
+            "columns.previous_rank" => {
+                state.config.columns.previous_rank = !state.config.columns.previous_rank;
+                state.config.columns.previous_rank
+            }
+            "columns.leaderboard" => {
+                state.config.columns.leaderboard = !state.config.columns.leaderboard;
+                state.config.columns.leaderboard
+            }
+            "columns.headshot_percent" => {
+                state.config.columns.headshot_percent = !state.config.columns.headshot_percent;
+                state.config.columns.headshot_percent
+            }
+            "columns.winrate" => {
+                state.config.columns.winrate = !state.config.columns.winrate;
+                state.config.columns.winrate
+            }
+            "columns.kd" => {
+                state.config.columns.kd = !state.config.columns.kd;
+                state.config.columns.kd
+            }
+            "columns.level" => {
+                state.config.columns.level = !state.config.columns.level;
+                state.config.columns.level
+            }
+            "behavior.auto_show_pregame" => {
+                state.config.behavior.auto_show_pregame = !state.config.behavior.auto_show_pregame;
+                state.config.behavior.auto_show_pregame
+            }
+            "behavior.auto_hide_ingame" => {
+                state.config.behavior.auto_hide_ingame = !state.config.behavior.auto_hide_ingame;
+                state.config.behavior.auto_hide_ingame
+            }
+            "behavior.party_finder" => {
+                state.config.behavior.party_finder = !state.config.behavior.party_finder;
+                state.config.behavior.party_finder
+            }
+            "behavior.discord_rpc" => {
+                state.config.behavior.discord_rpc = !state.config.behavior.discord_rpc;
+                state.config.behavior.discord_rpc
+            }
+            "overlay.truncate_skins" => {
+                state.config.overlay.truncate_skins = !state.config.overlay.truncate_skins;
+                state.config.overlay.truncate_skins
+            }
+            _ => return None,
+        }
+    };
+
+    let config = {
+        let state = app_state.blocking_read();
+        state.config.clone()
+    };
+    if let Err(error) = config.save() {
+        tracing::warn!("Failed to save tray setting '{}': {}", id, error);
+    }
+
+    Some(next_value)
 }
 
 fn load_tray_icon() -> tray_icon::Icon {
