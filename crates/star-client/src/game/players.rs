@@ -4,6 +4,13 @@ use crate::riot::types::*;
 use anyhow::Result;
 use std::collections::HashMap;
 
+#[derive(Debug, Default)]
+struct EquippedSkin {
+    name: String,
+    level: usize,
+    total_levels: usize,
+}
+
 pub async fn fetch_pregame_players(
     api: &mut RiotApiClient,
     match_id: &str,
@@ -96,7 +103,10 @@ pub async fn fetch_coregame_players(
         display.team_id = p.team_i_d.clone().unwrap_or_default();
 
         if let Some(loadout) = loadout_map.get(&p.subject) {
-            display.skin_name = extract_weapon_skin(api, loadout, &config.overlay.weapon);
+            let skin = extract_weapon_skin(api, loadout, &config.overlay.weapon);
+            display.skin_name = skin.name;
+            display.skin_level = skin.level;
+            display.skin_level_total = skin.total_levels;
         }
 
         players.push(display);
@@ -325,7 +335,11 @@ fn aggregate_damage(details: &MatchDetailsResponse, puuid: &str) -> (i32, i32, i
     (hs, bs, ls)
 }
 
-fn extract_weapon_skin(api: &RiotApiClient, loadout: &PlayerLoadout, weapon_name: &str) -> String {
+fn extract_weapon_skin(
+    api: &RiotApiClient,
+    loadout: &PlayerLoadout,
+    weapon_name: &str,
+) -> EquippedSkin {
     let weapon_uuid = match weapon_name.to_lowercase().as_str() {
         "vandal" => "9c82e19d-4575-0200-1a81-3eacf00cf872",
         "phantom" => "ee8e8d15-496b-07ac-f604-8f8488911e76",
@@ -342,9 +356,20 @@ fn extract_weapon_skin(api: &RiotApiClient, loadout: &PlayerLoadout, weapon_name
                 for socket in sockets.values() {
                     if let Some(socket_item) = &socket.item {
                         if let Some(id) = &socket_item.i_d {
+                            if let Some(skin) = api.get_skin_level_info(id) {
+                                return EquippedSkin {
+                                    name: skin.skin_name.clone(),
+                                    level: skin.level,
+                                    total_levels: skin.total_levels,
+                                };
+                            }
+
                             let name = api.get_skin_name(id);
                             if name != "Unknown" {
-                                return name;
+                                return EquippedSkin {
+                                    name,
+                                    ..Default::default()
+                                };
                             }
                         }
                     }
@@ -353,5 +378,17 @@ fn extract_weapon_skin(api: &RiotApiClient, loadout: &PlayerLoadout, weapon_name
         }
     }
 
-    "Standard".to_string()
+    EquippedSkin {
+        name: standard_skin_name(weapon_name),
+        ..Default::default()
+    }
+}
+
+fn standard_skin_name(weapon_name: &str) -> String {
+    let weapon_name = weapon_name.trim();
+    if weapon_name.is_empty() {
+        "Standard".to_string()
+    } else {
+        format!("Standard {weapon_name}")
+    }
 }

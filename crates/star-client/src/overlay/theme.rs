@@ -72,9 +72,14 @@ pub fn configure_fonts(ctx: &egui::Context) {
             family.extend(loaded_fonts.iter().map(|name| (*name).into()));
         }
 
-        tracing::info!("Loaded multilingual font fallbacks: {}", loaded_fonts.join(", "));
+        tracing::info!(
+            "Loaded multilingual font fallbacks: {}",
+            loaded_fonts.join(", ")
+        );
     } else {
-        tracing::warn!("No system font fallbacks were loaded; non-Latin glyph coverage may be limited");
+        tracing::warn!(
+            "No system font fallbacks were loaded; non-Latin glyph coverage may be limited"
+        );
     }
 
     ctx.set_fonts(fonts);

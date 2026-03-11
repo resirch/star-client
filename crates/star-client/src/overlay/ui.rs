@@ -3,7 +3,7 @@ use crate::game::state::GameState;
 use crate::overlay::theme;
 use crate::riot::types::{rank_color, PlayerDisplayData};
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Ui, Vec2};
+use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 
 const PARTY_W: f32 = 8.0;
 const STAR_W: f32 = 18.0;
@@ -23,6 +23,10 @@ const SKIN_W: f32 = 156.0;
 const ROW_H: f32 = 22.0;
 const HDR_H: f32 = 20.0;
 const CELL_PAD: f32 = 3.0;
+const SKIN_UPGRADE_GAP: f32 = 8.0;
+const SKIN_UPGRADE_BAR_HEIGHT: f32 = 9.0;
+const SKIN_UPGRADE_BAR_WIDTH: f32 = 1.5;
+const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
 
 pub fn render_overlay(
     ctx: &egui::Context,
@@ -449,7 +453,7 @@ fn player_row(
                 &config.overlay.weapon,
                 config.overlay.truncate_skins,
             );
-            text_cell(ui, &skin_name, SKIN_W, &f, theme::TEXT_SECONDARY);
+            skin_cell(ui, &skin_name, p.skin_level, p.skin_level_total, SKIN_W, &f);
         }
     });
 }
@@ -485,6 +489,96 @@ fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Co
         galley,
         fallback_color,
     );
+}
+
+fn skin_cell(
+    ui: &mut Ui,
+    skin_name: &str,
+    skin_level: usize,
+    skin_level_total: usize,
+    w: f32,
+    font: &egui::FontId,
+) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
+    let clip_rect = Rect::from_min_max(
+        Pos2::new(rect.left() + CELL_PAD, rect.top()),
+        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
+    );
+    let painter = ui.painter().with_clip_rect(clip_rect);
+
+    let mut name_job = LayoutJob::default();
+    name_job.append(
+        skin_name,
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color: theme::TEXT_SECONDARY,
+            ..Default::default()
+        },
+    );
+    let name_galley = ui.painter().layout_job(name_job);
+    if name_galley.size().x > 0.0 {
+        painter.galley(
+            Pos2::new(
+                clip_rect.left(),
+                rect.center().y - name_galley.size().y / 2.0,
+            ),
+            name_galley.clone(),
+            theme::TEXT_SECONDARY,
+        );
+    }
+
+    if skin_level_total <= 1 {
+        return;
+    }
+
+    let bar_x = clip_rect.left() + name_galley.size().x + 6.0;
+    if bar_x >= clip_rect.right() {
+        return;
+    }
+
+    paint_skin_upgrade_bar(
+        &painter,
+        Rect::from_min_max(
+            Pos2::new(bar_x, clip_rect.top()),
+            Pos2::new(clip_rect.right(), clip_rect.bottom()),
+        ),
+        skin_level,
+        skin_level_total,
+    );
+}
+
+fn paint_skin_upgrade_bar(
+    painter: &egui::Painter,
+    rect: Rect,
+    skin_level: usize,
+    skin_level_total: usize,
+) {
+    let clamped_level = skin_level.min(skin_level_total);
+    let center_y = rect.center().y;
+
+    for index in 0..skin_level_total {
+        let x = rect.left() + index as f32 * SKIN_UPGRADE_GAP;
+        if x > rect.right() {
+            break;
+        }
+
+        if index < clamped_level {
+            painter.line_segment(
+                [
+                    Pos2::new(x, center_y - SKIN_UPGRADE_BAR_HEIGHT / 2.0),
+                    Pos2::new(x, center_y + SKIN_UPGRADE_BAR_HEIGHT / 2.0),
+                ],
+                Stroke::new(SKIN_UPGRADE_BAR_WIDTH, theme::TEXT_PRIMARY),
+            );
+        } else {
+            painter.circle_filled(
+                Pos2::new(x, center_y),
+                SKIN_UPGRADE_DOT_RADIUS,
+                theme::TEXT_MUTED,
+            );
+        }
+    }
 }
 
 fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
@@ -562,13 +656,26 @@ fn format_skin_name(raw_skin_name: &str, weapon_name: &str, truncate_skins: bool
     if raw_skin_name.is_empty() {
         return String::new();
     }
+
+    let standard_full_name = standard_skin_name(weapon_name);
+    if raw_skin_name.eq_ignore_ascii_case("standard")
+        || raw_skin_name.eq_ignore_ascii_case(&standard_full_name)
+        || is_standard_weapon_name(raw_skin_name, weapon_name)
+    {
+        return if truncate_skins {
+            "Standard".to_string()
+        } else {
+            standard_full_name
+        };
+    }
+
     if !truncate_skins {
         return raw_skin_name.to_string();
     }
 
     let shortened = strip_weapon_suffix(raw_skin_name, weapon_name).trim();
     if shortened.is_empty() || shortened.eq_ignore_ascii_case("standard") {
-        return raw_skin_name.to_string();
+        return "Standard".to_string();
     }
 
     let mut tokens = shortened.split_whitespace();
@@ -601,6 +708,20 @@ fn strip_weapon_suffix<'a>(skin_name: &'a str, weapon_name: &str) -> &'a str {
     } else {
         skin_name
     }
+}
+
+fn standard_skin_name(weapon_name: &str) -> String {
+    let weapon_name = weapon_name.trim();
+    if weapon_name.is_empty() {
+        "Standard".to_string()
+    } else {
+        format!("Standard {weapon_name}")
+    }
+}
+
+fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
+    let weapon_name = weapon_name.trim();
+    !weapon_name.is_empty() && raw_skin_name.eq_ignore_ascii_case(weapon_name)
 }
 
 #[cfg(test)]
@@ -646,6 +767,11 @@ mod tests {
             "RGX 11z"
         );
         assert_eq!(format_skin_name("Standard", "Vandal", true), "Standard");
+        assert_eq!(
+            format_skin_name("Standard Vandal", "Vandal", true),
+            "Standard"
+        );
+        assert_eq!(format_skin_name("Vandal", "Vandal", true), "Standard");
     }
 
     #[test]
@@ -654,6 +780,11 @@ mod tests {
             format_skin_name("Prelude to Chaos Vandal", "Vandal", false),
             "Prelude to Chaos Vandal"
         );
+        assert_eq!(
+            format_skin_name("Standard", "Vandal", false),
+            "Standard Vandal"
+        );
+        assert_eq!(format_skin_name("Vandal", "Vandal", false), "Standard Vandal");
     }
 
     #[test]

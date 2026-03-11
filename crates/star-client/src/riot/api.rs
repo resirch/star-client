@@ -9,7 +9,7 @@ pub struct RiotApiClient {
     client_version: String,
     content_cache: Option<ContentResponse>,
     agent_cache: HashMap<String, AgentData>,
-    skin_cache: HashMap<String, WeaponSkinLevelData>,
+    skin_cache: HashMap<String, SkinLevelInfo>,
 }
 
 impl RiotApiClient {
@@ -365,16 +365,32 @@ impl RiotApiClient {
         if !self.skin_cache.is_empty() {
             return Ok(());
         }
-        let resp: ValorantApiResponse<Vec<WeaponSkinLevelData>> = self
+        let resp: ValorantApiResponse<Vec<WeaponData>> = self
             .http
-            .get("https://valorant-api.com/v1/weapons/skinlevels")
+            .get("https://valorant-api.com/v1/weapons")
             .send()
             .await?
             .json()
             .await?;
-        if let Some(skins) = resp.data {
-            for skin in skins {
-                self.skin_cache.insert(skin.uuid.to_lowercase(), skin);
+        if let Some(weapons) = resp.data {
+            for weapon in weapons {
+                for skin in weapon.skins {
+                    let total_levels = skin.levels.len().max(1);
+                    for (index, level) in skin.levels.iter().enumerate() {
+                        self.skin_cache.insert(
+                            level.uuid.to_lowercase(),
+                            SkinLevelInfo {
+                                display_name: level
+                                    .display_name
+                                    .clone()
+                                    .unwrap_or_else(|| skin.display_name.clone()),
+                                skin_name: skin.display_name.clone(),
+                                level: index + 1,
+                                total_levels,
+                            },
+                        );
+                    }
+                }
             }
         }
         Ok(())
@@ -383,7 +399,11 @@ impl RiotApiClient {
     pub fn get_skin_name(&self, uuid: &str) -> String {
         self.skin_cache
             .get(&uuid.to_lowercase())
-            .and_then(|s| s.display_name.clone())
+            .map(|skin| skin.display_name.clone())
             .unwrap_or_else(|| "Unknown".into())
+    }
+
+    pub fn get_skin_level_info(&self, uuid: &str) -> Option<&SkinLevelInfo> {
+        self.skin_cache.get(&uuid.to_lowercase())
     }
 }

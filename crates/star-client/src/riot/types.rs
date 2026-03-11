@@ -413,10 +413,21 @@ pub struct MapData {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WeaponData {
+    pub uuid: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub skins: Vec<WeaponSkinData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WeaponSkinData {
     pub uuid: String,
     pub display_name: String,
     pub display_icon: Option<String>,
+    #[serde(default)]
+    pub levels: Vec<WeaponSkinLevelData>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -425,6 +436,14 @@ pub struct WeaponSkinLevelData {
     pub uuid: String,
     pub display_name: Option<String>,
     pub display_icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SkinLevelInfo {
+    pub display_name: String,
+    pub skin_name: String,
+    pub level: usize,
+    pub total_levels: usize,
 }
 
 // --- Aggregated player data for overlay display ---
@@ -455,6 +474,8 @@ pub struct PlayerDisplayData {
     pub afk_penalty: i32,
     pub account_level: i32,
     pub skin_name: String,
+    pub skin_level: usize,
+    pub skin_level_total: usize,
     pub party_id: String,
     pub party_number: i32,
     pub is_incognito: bool,
