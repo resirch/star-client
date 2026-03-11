@@ -9,7 +9,7 @@ use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 
 const PARTY_W: f32 = 8.0;
 const STAR_W: f32 = 18.0;
-const AGENT_W: f32 = 62.0;
+const AGENT_W: f32 = 74.0;
 const NAME_W: f32 = 125.0;
 const RANK_W: f32 = 82.0;
 const RANK_W_TRUNCATED: f32 = 56.0;
@@ -20,7 +20,7 @@ const LB_W: f32 = 40.0;
 const KD_W: f32 = 48.0;
 const HS_W: f32 = 48.0;
 const WR_W: f32 = 50.0;
-const FORM_W: f32 = 66.0;
+const FORM_W: f32 = 78.0;
 const LVL_W: f32 = 38.0;
 const SKIN_W: f32 = 156.0;
 const ROW_H: f32 = 22.0;
@@ -260,8 +260,8 @@ fn hdr_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::C
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, HDR_H), egui::Sense::hover());
     if !text.is_empty() {
         ui.painter().text(
-            Pos2::new(rect.left() + CELL_PAD, rect.center().y),
-            Align2::LEFT_CENTER,
+            rect.center(),
+            Align2::CENTER_CENTER,
             text,
             font.clone(),
             color,
