@@ -114,10 +114,6 @@ fn leaderboard_column_visible(config: &Config, players: &[PlayerDisplayData]) ->
         return false;
     }
 
-    if !config.features.auto_hide_leaderboard {
-        return true;
-    }
-
     players.iter().any(|p| p.leaderboard_position > 0)
 }
 
@@ -705,12 +701,12 @@ fn state_color(state: &GameState) -> egui::Color32 {
     }
 }
 
-fn rr_column_visible(config: &Config) -> bool {
-    config.columns.rr && !config.features.aggregate_rank_rr
+fn rr_column_visible(_config: &Config) -> bool {
+    false
 }
 
 fn rank_column_width(config: &Config) -> f32 {
-    if config.columns.rr && config.features.aggregate_rank_rr {
+    if config.columns.rr {
         116.0
     } else {
         RANK_W
@@ -742,7 +738,7 @@ fn selected_weapon_label(weapon_name: &str) -> String {
 
 fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
     let rank = format_rank_name(player.current_rank, config);
-    if config.columns.rr && config.features.aggregate_rank_rr && player.current_rank > 0 {
+    if config.columns.rr && player.current_rank > 0 {
         format!("{rank} ({})", player.rr)
     } else {
         rank
@@ -761,11 +757,7 @@ fn format_peak_rank_display(player: &PlayerDisplayData, config: &Config) -> Stri
 
 fn format_rank_name(tier: i32, config: &Config) -> String {
     if tier <= 0 {
-        return if config.features.short_ranks {
-            "UnR".to_string()
-        } else {
-            "Unranked".to_string()
-        };
+        return "Unranked".to_string();
     }
 
     let include_tier = tier != 27;
@@ -778,8 +770,6 @@ fn format_rank_name(tier: i32, config: &Config) -> String {
 
     let base = if config.features.truncate_ranks {
         truncated_rank_name(tier)
-    } else if config.features.short_ranks {
-        short_rank_name(tier)
     } else {
         full_rank_name(tier)
     };
@@ -798,21 +788,6 @@ fn truncated_rank_name(tier: i32) -> &'static str {
         9..=11 => "Slv",
         12..=14 => "Gld",
         15..=17 => "Plt",
-        18..=20 => "Dia",
-        21..=23 => "Asc",
-        24..=26 => "Imm",
-        27 => "Rad",
-        _ => "Unranked",
-    }
-}
-
-fn short_rank_name(tier: i32) -> &'static str {
-    match tier {
-        3..=5 => "Iron",
-        6..=8 => "Bron",
-        9..=11 => "Silv",
-        12..=14 => "Gold",
-        15..=17 => "Plat",
         18..=20 => "Dia",
         21..=23 => "Asc",
         24..=26 => "Imm",
@@ -1160,7 +1135,6 @@ mod tests {
     fn formats_rank_display_from_feature_flags() {
         let mut config = Config::default();
         config.columns.rr = true;
-        config.features.aggregate_rank_rr = true;
         config.features.truncate_ranks = true;
         config.features.roman_numerals = true;
 
@@ -1172,27 +1146,26 @@ mod tests {
 
         assert_eq!(format_rank_display(&player, &config), "Imm II (87)");
 
-        config.features.aggregate_rank_rr = false;
         config.features.truncate_ranks = false;
-        config.features.short_ranks = true;
         config.features.roman_numerals = false;
-        assert_eq!(format_rank_name(16, &config), "Plat 2");
+        assert_eq!(format_rank_name(16, &config), "Platinum 2");
     }
 
     #[test]
-    fn auto_hide_leaderboard_only_hides_when_enabled() {
+    fn leaderboard_column_hides_when_no_players_have_a_rank() {
         let mut config = Config::default();
         config.columns.leaderboard = true;
-        config.features.auto_hide_leaderboard = true;
         assert!(!leaderboard_column_visible(
             &config,
             &[PlayerDisplayData::default()]
         ));
 
-        config.features.auto_hide_leaderboard = false;
         assert!(leaderboard_column_visible(
             &config,
-            &[PlayerDisplayData::default()]
+            &[PlayerDisplayData {
+                leaderboard_position: 25,
+                ..Default::default()
+            }]
         ));
     }
 

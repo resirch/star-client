@@ -24,11 +24,8 @@ discord_rpc = true
 
 [features]
 last_played = true
-auto_hide_leaderboard = true
 peak_rank_act = true
-aggregate_rank_rr = true
 server_id = false
-short_ranks = false
 truncate_names = true
 truncate_ranks = true
 roman_numerals = true

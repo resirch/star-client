@@ -145,13 +145,6 @@ impl SystemTray {
         append_check(
             &features_menu,
             &mut check_items,
-            "features.auto_hide_leaderboard",
-            "Auto Hide Leaderboard",
-            config.features.auto_hide_leaderboard,
-        )?;
-        append_check(
-            &features_menu,
-            &mut check_items,
             "features.peak_rank_act",
             "Peak Rank Act",
             config.features.peak_rank_act,
@@ -159,30 +152,9 @@ impl SystemTray {
         append_check(
             &features_menu,
             &mut check_items,
-            "features.aggregate_rank_rr",
-            "Aggregate Rank RR",
-            config.features.aggregate_rank_rr,
-        )?;
-        append_check(
-            &features_menu,
-            &mut check_items,
             "features.server_id",
             "Server ID",
             config.features.server_id,
-        )?;
-        append_check(
-            &features_menu,
-            &mut check_items,
-            "features.short_ranks",
-            "Short Ranks",
-            config.features.short_ranks,
-        )?;
-        append_check(
-            &features_menu,
-            &mut check_items,
-            "features.truncate_names",
-            "Truncate Names",
-            config.features.truncate_names,
         )?;
         append_check(
             &features_menu,
@@ -197,6 +169,13 @@ impl SystemTray {
             "features.roman_numerals",
             "Roman Numerals",
             config.features.roman_numerals,
+        )?;
+        append_check(
+            &features_menu,
+            &mut check_items,
+            "features.truncate_names",
+            "Truncate Names",
+            config.features.truncate_names,
         )?;
 
         let overlay_menu = Submenu::new("Overlay", true);
@@ -422,29 +401,13 @@ fn handle_setting_event(app_state: &Arc<RwLock<AppState>>, id: &str) -> bool {
                 changed = true;
                 true
             }
-            "features.auto_hide_leaderboard" => {
-                state.config.features.auto_hide_leaderboard =
-                    !state.config.features.auto_hide_leaderboard;
-                changed = true;
-                true
-            }
             "features.peak_rank_act" => {
                 state.config.features.peak_rank_act = !state.config.features.peak_rank_act;
                 changed = true;
                 true
             }
-            "features.aggregate_rank_rr" => {
-                state.config.features.aggregate_rank_rr = !state.config.features.aggregate_rank_rr;
-                changed = true;
-                true
-            }
             "features.server_id" => {
                 state.config.features.server_id = !state.config.features.server_id;
-                changed = true;
-                true
-            }
-            "features.short_ranks" => {
-                state.config.features.short_ranks = !state.config.features.short_ranks;
                 changed = true;
                 true
             }
@@ -525,11 +488,8 @@ fn check_state_for_id(config: &Config, id: &str) -> Option<bool> {
         "behavior.party_finder" => config.behavior.party_finder,
         "behavior.discord_rpc" => config.behavior.discord_rpc,
         "features.last_played" => config.features.last_played,
-        "features.auto_hide_leaderboard" => config.features.auto_hide_leaderboard,
         "features.peak_rank_act" => config.features.peak_rank_act,
-        "features.aggregate_rank_rr" => config.features.aggregate_rank_rr,
         "features.server_id" => config.features.server_id,
-        "features.short_ranks" => config.features.short_ranks,
         "features.truncate_names" => config.features.truncate_names,
         "features.truncate_ranks" => config.features.truncate_ranks,
         "features.roman_numerals" => config.features.roman_numerals,
