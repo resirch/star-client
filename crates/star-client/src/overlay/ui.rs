@@ -12,6 +12,7 @@ const STAR_W: f32 = 18.0;
 const AGENT_W: f32 = 62.0;
 const NAME_W: f32 = 125.0;
 const RANK_W: f32 = 82.0;
+const RANK_W_TRUNCATED: f32 = 64.0;
 const RR_W: f32 = 55.0;
 const PEAK_W: f32 = 82.0;
 const PREV_W: f32 = 82.0;
@@ -29,6 +30,12 @@ const SKIN_UPGRADE_GAP: f32 = 8.0;
 const SKIN_UPGRADE_BAR_HEIGHT: f32 = 9.0;
 const SKIN_UPGRADE_BAR_WIDTH: f32 = 1.5;
 const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
+
+#[derive(Clone, Copy)]
+enum CellAlign {
+    Left,
+    Right,
+}
 
 pub fn render_overlay(
     ctx: &egui::Context,
@@ -131,7 +138,7 @@ fn table_width(config: &Config, show_leaderboard: bool, show_skin: bool) -> f32 
         w += peak_column_width(config);
     }
     if c.previous_rank {
-        w += PREV_W;
+        w += previous_rank_column_width(config);
     }
     if show_leaderboard {
         w += LB_W;
@@ -224,7 +231,7 @@ fn header_row(
             hdr_cell(ui, "PEAK", peak_column_width(config), &f, clr);
         }
         if c.previous_rank {
-            hdr_cell(ui, "PREV", PREV_W, &f, clr);
+            hdr_cell(ui, "PREV", previous_rank_column_width(config), &f, clr);
         }
         if show_leaderboard {
             hdr_cell(ui, "#", LB_W, &f, clr);
@@ -285,6 +292,8 @@ fn player_row(
     let c = &config.columns;
     let rank_w = rank_column_width(config);
     let peak_w = peak_column_width(config);
+    let prev_w = previous_rank_column_width(config);
+    let rank_align = rank_cell_align(config);
     let bg = if is_ally {
         theme::ROW_BG_ALLY
     } else {
@@ -354,9 +363,9 @@ fn player_row(
         // Rank (always shown)
         if p.enriched {
             let text = format_rank_display(p, config);
-            text_cell(ui, &text, rank_w, &f, rank_color(p.current_rank));
+            text_cell_aligned(ui, &text, rank_w, &f, rank_color(p.current_rank), rank_align);
         } else {
-            text_cell(ui, &loading, rank_w, &f, theme::TEXT_MUTED);
+            text_cell_aligned(ui, &loading, rank_w, &f, theme::TEXT_MUTED, rank_align);
         }
 
         if rr_column_visible(config) {
@@ -379,9 +388,9 @@ fn player_row(
                 } else {
                     "-".to_string()
                 };
-                text_cell(ui, &t, peak_w, &f, rank_color(p.peak_rank));
+                text_cell_aligned(ui, &t, peak_w, &f, rank_color(p.peak_rank), rank_align);
             } else {
-                text_cell(ui, &loading, peak_w, &f, theme::TEXT_MUTED);
+                text_cell_aligned(ui, &loading, peak_w, &f, theme::TEXT_MUTED, rank_align);
             }
         }
 
@@ -392,9 +401,9 @@ fn player_row(
                 } else {
                     "-".to_string()
                 };
-                text_cell(ui, &t, PREV_W, &f, rank_color(p.previous_rank));
+                text_cell_aligned(ui, &t, prev_w, &f, rank_color(p.previous_rank), rank_align);
             } else {
-                text_cell(ui, &loading, PREV_W, &f, theme::TEXT_MUTED);
+                text_cell_aligned(ui, &loading, prev_w, &f, theme::TEXT_MUTED, rank_align);
             }
         }
 
@@ -507,6 +516,17 @@ fn player_row(
 }
 
 fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
+    text_cell_aligned(ui, text, w, font, color, CellAlign::Left);
+}
+
+fn text_cell_aligned(
+    ui: &mut Ui,
+    text: &str,
+    w: f32,
+    font: &egui::FontId,
+    color: egui::Color32,
+    align: CellAlign,
+) {
     let mut job = LayoutJob::default();
     job.append(
         text,
@@ -517,10 +537,16 @@ fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::
             ..Default::default()
         },
     );
-    layout_job_cell(ui, job, w, color);
+    layout_job_cell(ui, job, w, color, align);
 }
 
-fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
+fn layout_job_cell(
+    ui: &mut Ui,
+    job: LayoutJob,
+    w: f32,
+    fallback_color: egui::Color32,
+    align: CellAlign,
+) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
     let clip_rect = Rect::from_min_max(
         Pos2::new(rect.left() + CELL_PAD, rect.top()),
@@ -532,8 +558,12 @@ fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Co
     }
 
     let painter = ui.painter().with_clip_rect(clip_rect);
+    let x = match align {
+        CellAlign::Left => clip_rect.left(),
+        CellAlign::Right => (clip_rect.right() - galley.size().x).max(clip_rect.left()),
+    };
     painter.galley(
-        Pos2::new(clip_rect.left(), rect.center().y - galley.size().y / 2.0),
+        Pos2::new(x, rect.center().y - galley.size().y / 2.0),
         galley,
         fallback_color,
     );
@@ -656,7 +686,7 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
 
     if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
         job.append("-", 0.0, base);
-        layout_job_cell(ui, job, w, theme::TEXT_MUTED);
+        layout_job_cell(ui, job, w, theme::TEXT_MUTED, CellAlign::Left);
         return;
     }
 
@@ -689,7 +719,7 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
             ..Default::default()
         },
     );
-    layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
+    layout_job_cell(ui, job, w, theme::TEXT_PRIMARY, CellAlign::Left);
 }
 
 fn state_color(state: &GameState) -> egui::Color32 {
@@ -706,18 +736,37 @@ fn rr_column_visible(config: &Config) -> bool {
 }
 
 fn rank_column_width(config: &Config) -> f32 {
+    let base_width = rank_label_column_width(config);
     if config.columns.rr {
-        116.0
+        base_width + 34.0
+    } else {
+        base_width
+    }
+}
+
+fn peak_column_width(config: &Config) -> f32 {
+    let _ = PEAK_W;
+    rank_label_column_width(config)
+}
+
+fn previous_rank_column_width(config: &Config) -> f32 {
+    let _ = PREV_W;
+    rank_label_column_width(config)
+}
+
+fn rank_label_column_width(config: &Config) -> f32 {
+    if config.features.truncate_ranks {
+        RANK_W_TRUNCATED
     } else {
         RANK_W
     }
 }
 
-fn peak_column_width(config: &Config) -> f32 {
-    if config.features.peak_rank_act {
-        112.0
+fn rank_cell_align(config: &Config) -> CellAlign {
+    if config.features.roman_numerals {
+        CellAlign::Right
     } else {
-        PEAK_W
+        CellAlign::Left
     }
 }
 
@@ -741,13 +790,7 @@ fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
 }
 
 fn format_peak_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
-    let mut text = format_rank_name(player.peak_rank, config);
-    if config.features.peak_rank_act && !player.peak_rank_act.is_empty() {
-        text.push_str(" (");
-        text.push_str(&player.peak_rank_act);
-        text.push(')');
-    }
-    text
+    format_rank_name(player.peak_rank, config)
 }
 
 fn format_rank_name(tier: i32, config: &Config) -> String {
@@ -1040,8 +1083,9 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 mod tests {
     use super::{
         format_last_seen_summary, format_rank_display, format_rank_name, format_server_id,
-        format_skin_name, leaderboard_column_visible, rr_column_visible, skin_column_visible,
-        split_players_by_team,
+        format_skin_name, leaderboard_column_visible, peak_column_width,
+        previous_rank_column_width, rank_cell_align, rank_column_width, rr_column_visible,
+        skin_column_visible, split_players_by_team, CellAlign,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1142,10 +1186,18 @@ mod tests {
 
         assert_eq!(format_rank_display(&player, &config), "Imm II");
         assert!(rr_column_visible(&config));
+        assert_eq!(rank_column_width(&config), 98.0);
+        assert_eq!(peak_column_width(&config), 64.0);
+        assert_eq!(previous_rank_column_width(&config), 64.0);
+        assert!(matches!(rank_cell_align(&config), CellAlign::Right));
 
         config.features.truncate_ranks = false;
         config.features.roman_numerals = false;
         assert_eq!(format_rank_name(16, &config), "Platinum 2");
+        assert_eq!(rank_column_width(&config), 116.0);
+        assert_eq!(peak_column_width(&config), 82.0);
+        assert_eq!(previous_rank_column_width(&config), 82.0);
+        assert!(matches!(rank_cell_align(&config), CellAlign::Left));
     }
 
     #[test]

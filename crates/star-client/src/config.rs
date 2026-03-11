@@ -67,8 +67,6 @@ pub struct BehaviorConfig {
 pub struct FeatureConfig {
     #[serde(default = "bool_true")]
     pub last_played: bool,
-    #[serde(default = "bool_true")]
-    pub peak_rank_act: bool,
     #[serde(default = "bool_false")]
     pub server_id: bool,
     #[serde(default = "bool_true")]
@@ -156,7 +154,6 @@ impl Default for FeatureConfig {
     fn default() -> Self {
         Self {
             last_played: true,
-            peak_rank_act: true,
             server_id: false,
             truncate_names: true,
             truncate_ranks: true,

@@ -24,7 +24,6 @@ discord_rpc = true
 
 [features]
 last_played = true
-peak_rank_act = true
 server_id = false
 truncate_names = true
 truncate_ranks = true

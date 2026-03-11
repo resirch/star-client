@@ -145,13 +145,6 @@ impl SystemTray {
         append_check(
             &features_menu,
             &mut check_items,
-            "features.peak_rank_act",
-            "Peak Rank Act",
-            config.features.peak_rank_act,
-        )?;
-        append_check(
-            &features_menu,
-            &mut check_items,
             "features.server_id",
             "Server ID",
             config.features.server_id,
@@ -177,16 +170,15 @@ impl SystemTray {
             "Truncate Names",
             config.features.truncate_names,
         )?;
-
-        let overlay_menu = Submenu::new("Overlay", true);
         append_check(
-            &overlay_menu,
+            &features_menu,
             &mut check_items,
             "overlay.truncate_skins",
             "Truncate Skins",
             config.overlay.truncate_skins,
         )?;
-        overlay_menu.append(&PredefinedMenuItem::separator())?;
+
+        let overlay_menu = Submenu::new("Overlay", true);
 
         let hotkey_menu = Submenu::new("Hotkey", true);
         for hotkey in SUPPORTED_HOTKEYS {
@@ -401,11 +393,6 @@ fn handle_setting_event(app_state: &Arc<RwLock<AppState>>, id: &str) -> bool {
                 changed = true;
                 true
             }
-            "features.peak_rank_act" => {
-                state.config.features.peak_rank_act = !state.config.features.peak_rank_act;
-                changed = true;
-                true
-            }
             "features.server_id" => {
                 state.config.features.server_id = !state.config.features.server_id;
                 changed = true;
@@ -488,7 +475,6 @@ fn check_state_for_id(config: &Config, id: &str) -> Option<bool> {
         "behavior.party_finder" => config.behavior.party_finder,
         "behavior.discord_rpc" => config.behavior.discord_rpc,
         "features.last_played" => config.features.last_played,
-        "features.peak_rank_act" => config.features.peak_rank_act,
         "features.server_id" => config.features.server_id,
         "features.truncate_names" => config.features.truncate_names,
         "features.truncate_ranks" => config.features.truncate_ranks,

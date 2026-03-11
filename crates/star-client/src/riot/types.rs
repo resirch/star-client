@@ -467,7 +467,6 @@ pub struct PlayerDisplayData {
     pub rr: i32,
     pub peak_rank: i32,
     pub peak_rank_name: String,
-    pub peak_rank_act: String,
     pub previous_rank: i32,
     pub previous_rank_name: String,
     pub leaderboard_position: i32,
