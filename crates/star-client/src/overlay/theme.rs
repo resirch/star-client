@@ -39,6 +39,10 @@ pub fn body_font() -> FontId {
     FontId::new(12.5, FontFamily::Proportional)
 }
 
+pub fn body_regular_font() -> FontId {
+    FontId::new(12.5, FontFamily::Name(REGULAR_FONT_FAMILY.into()))
+}
+
 pub fn small_font() -> FontId {
     FontId::new(10.0, FontFamily::Proportional)
 }
@@ -88,27 +92,18 @@ pub fn configure_fonts(ctx: &egui::Context) {
             .chain(default_proportional.clone())
             .collect()
     };
-    fonts.families.insert(
-        FontFamily::Name(REGULAR_FONT_FAMILY.into()),
-        regular_family,
-    );
+    fonts
+        .families
+        .insert(FontFamily::Name(REGULAR_FONT_FAMILY.into()), regular_family);
 
     if !loaded_fonts.is_empty() {
         if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
             let existing = family.clone();
-            *family = loaded_fonts
-                .iter()
-                .cloned()
-                .chain(existing)
-                .collect();
+            *family = loaded_fonts.iter().cloned().chain(existing).collect();
         }
         if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
             let existing = family.clone();
-            *family = loaded_fonts
-                .iter()
-                .cloned()
-                .chain(existing)
-                .collect();
+            *family = loaded_fonts.iter().cloned().chain(existing).collect();
         }
 
         tracing::info!(

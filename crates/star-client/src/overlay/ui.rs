@@ -485,7 +485,8 @@ fn player_row(
 
         if c.recent_results {
             if p.enriched {
-                recent_results_cell(ui, p, FORM_W, &f);
+                let form_font = theme::body_regular_font();
+                recent_results_cell(ui, p, FORM_W, &form_font);
             } else {
                 text_cell(ui, &loading, FORM_W, &f, theme::TEXT_MUTED);
             }
