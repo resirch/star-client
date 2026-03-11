@@ -28,6 +28,7 @@ pub fn render_overlay(
     ctx: &egui::Context,
     game_state: &GameState,
     players: &[PlayerDisplayData],
+    local_puuid: &str,
     config: &Config,
 ) {
     if players.is_empty() {
@@ -37,7 +38,8 @@ pub fn render_overlay(
     let columns = &config.columns;
     let screen = ctx.screen_rect();
     let show_leaderboard = leaderboard_column_visible(columns, players);
-    let tw = table_width(columns, show_leaderboard);
+    let show_skin = skin_column_visible(columns, game_state);
+    let tw = table_width(columns, show_leaderboard, show_skin);
     let x = (screen.width() - tw) / 2.0;
     let y = 60.0;
 
@@ -59,19 +61,17 @@ pub fn render_overlay(
                         ui,
                         columns,
                         show_leaderboard,
+                        show_skin,
                         &selected_weapon_label(&config.overlay.weapon),
                     );
                     ui.add_space(2.0);
 
-                    let my_team = players.first().map(|p| p.team_id.as_str()).unwrap_or("");
-                    let (allies, enemies): (Vec<_>, Vec<_>) = players
-                        .iter()
-                        .partition(|p| p.team_id == my_team || my_team.is_empty());
+                    let (allies, enemies) = split_players_by_team(players, local_puuid);
 
                     if !allies.is_empty() {
                         team_label(ui, "YOUR TEAM");
                         for p in &allies {
-                            player_row(ui, p, config, true, show_leaderboard);
+                            player_row(ui, p, config, true, show_leaderboard, show_skin);
                         }
                     }
 
@@ -79,18 +79,38 @@ pub fn render_overlay(
                         ui.add_space(6.0);
                         team_label(ui, "ENEMY TEAM");
                         for p in &enemies {
-                            player_row(ui, p, config, false, show_leaderboard);
+                            player_row(ui, p, config, false, show_leaderboard, show_skin);
                         }
                     }
                 });
         });
 }
 
+fn split_players_by_team<'a>(
+    players: &'a [PlayerDisplayData],
+    local_puuid: &str,
+) -> (Vec<&'a PlayerDisplayData>, Vec<&'a PlayerDisplayData>) {
+    let my_team = players
+        .iter()
+        .find(|player| player.puuid == local_puuid)
+        .or_else(|| players.first())
+        .map(|player| player.team_id.as_str())
+        .unwrap_or("");
+
+    players
+        .iter()
+        .partition(|player| player.team_id == my_team || my_team.is_empty())
+}
+
 fn leaderboard_column_visible(c: &ColumnConfig, players: &[PlayerDisplayData]) -> bool {
     c.leaderboard && players.iter().any(|p| p.leaderboard_position > 0)
 }
 
-fn table_width(c: &ColumnConfig, show_leaderboard: bool) -> f32 {
+fn skin_column_visible(c: &ColumnConfig, state: &GameState) -> bool {
+    c.skin && matches!(state, GameState::Ingame { .. })
+}
+
+fn table_width(c: &ColumnConfig, show_leaderboard: bool, show_skin: bool) -> f32 {
     let mut w = PARTY_W + STAR_W + AGENT_W + NAME_W + RANK_W;
     if c.rr {
         w += RR_W;
@@ -119,7 +139,7 @@ fn table_width(c: &ColumnConfig, show_leaderboard: bool) -> f32 {
     if c.level {
         w += LVL_W;
     }
-    if c.skin {
+    if show_skin {
         w += SKIN_W;
     }
     w + 12.0
@@ -142,7 +162,13 @@ fn title_bar(ui: &mut Ui, state: &GameState) {
     });
 }
 
-fn header_row(ui: &mut Ui, c: &ColumnConfig, show_leaderboard: bool, skin_label: &str) {
+fn header_row(
+    ui: &mut Ui,
+    c: &ColumnConfig,
+    show_leaderboard: bool,
+    show_skin: bool,
+    skin_label: &str,
+) {
     let origin = ui.cursor().min;
     let full_w = ui.available_width();
     ui.painter().rect_filled(
@@ -188,7 +214,7 @@ fn header_row(ui: &mut Ui, c: &ColumnConfig, show_leaderboard: bool, skin_label:
         if c.level {
             hdr_cell(ui, "LVL", LVL_W, &f, clr);
         }
-        if c.skin {
+        if show_skin {
             hdr_cell(ui, skin_label, SKIN_W, &f, clr);
         }
     });
@@ -224,6 +250,7 @@ fn player_row(
     config: &Config,
     is_ally: bool,
     show_leaderboard: bool,
+    show_skin: bool,
 ) {
     let c = &config.columns;
     let bg = if is_ally {
@@ -416,7 +443,7 @@ fn player_row(
             text_cell(ui, &t, LVL_W, &f, clr);
         }
 
-        if c.skin {
+        if show_skin {
             let skin_name = format_skin_name(
                 &p.skin_name,
                 &config.overlay.weapon,
@@ -549,10 +576,9 @@ fn format_skin_name(raw_skin_name: &str, weapon_name: &str, truncate_skins: bool
         return raw_skin_name.to_string();
     };
 
-    let numeric_suffix = shortened
-        .split_whitespace()
-        .rev()
-        .find(|token| token.chars().any(|ch| ch.is_ascii_digit()) && !token.eq_ignore_ascii_case(first));
+    let numeric_suffix = shortened.split_whitespace().rev().find(|token| {
+        token.chars().any(|ch| ch.is_ascii_digit()) && !token.eq_ignore_ascii_case(first)
+    });
 
     match numeric_suffix {
         Some(last) => format!("{first} {last}"),
@@ -579,7 +605,35 @@ fn strip_weapon_suffix<'a>(skin_name: &'a str, weapon_name: &str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::format_skin_name;
+    use super::{format_skin_name, skin_column_visible, split_players_by_team};
+    use crate::config::ColumnConfig;
+    use crate::game::state::GameState;
+    use crate::riot::types::PlayerDisplayData;
+
+    fn player(puuid: &str, team_id: &str) -> PlayerDisplayData {
+        PlayerDisplayData {
+            puuid: puuid.into(),
+            team_id: team_id.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn uses_local_player_team_when_first_player_is_enemy() {
+        let players = vec![
+            player("enemy-1", "Red"),
+            player("self", "Blue"),
+            player("ally-1", "Blue"),
+            player("enemy-2", "Red"),
+        ];
+
+        let (allies, enemies) = split_players_by_team(&players, "self");
+
+        assert_eq!(allies.len(), 2);
+        assert!(allies.iter().all(|player| player.team_id == "Blue"));
+        assert_eq!(enemies.len(), 2);
+        assert!(enemies.iter().all(|player| player.team_id == "Red"));
+    }
 
     #[test]
     fn truncates_skin_names_like_vry() {
@@ -600,5 +654,26 @@ mod tests {
             format_skin_name("Prelude to Chaos Vandal", "Vandal", false),
             "Prelude to Chaos Vandal"
         );
+    }
+
+    #[test]
+    fn only_shows_skin_column_ingame() {
+        let columns = ColumnConfig {
+            skin: true,
+            ..Default::default()
+        };
+
+        assert!(!skin_column_visible(
+            &columns,
+            &GameState::Pregame {
+                match_id: "pregame".into(),
+            }
+        ));
+        assert!(skin_column_visible(
+            &columns,
+            &GameState::Ingame {
+                match_id: "coregame".into(),
+            }
+        ));
     }
 }

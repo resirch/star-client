@@ -9,6 +9,7 @@ use crate::riot::api::RiotApiClient;
 use crate::riot::types::PlayerDisplayData;
 use crate::star::client::StarClient;
 use crate::star::presence;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -20,6 +21,7 @@ pub struct AppState {
     pub match_context: Option<MatchContext>,
     pub auto_visible: bool,
     pub last_match_id: String,
+    pub local_puuid: String,
 }
 
 impl AppState {
@@ -31,6 +33,7 @@ impl AppState {
             match_context: None,
             auto_visible: false,
             last_match_id: String::new(),
+            local_puuid: String::new(),
         }
     }
 }
@@ -234,6 +237,15 @@ pub async fn run_data_loop(
                 enriched_count,
                 player_count
             );
+        } else if let GameState::Pregame { match_id } = &new_state {
+            if let Ok(refreshed_players) =
+                players::fetch_pregame_players(&mut api_guard, match_id, &config).await
+            {
+                let mut state = app_state.write().await;
+                if state.last_match_id == *match_id && !state.players.is_empty() {
+                    merge_pregame_players(&mut state.players, refreshed_players);
+                }
+            }
         }
 
         // Phase 3: Re-enrich players that failed on previous attempts
@@ -295,5 +307,82 @@ pub async fn run_data_loop(
                 agent_name,
             );
         }
+    }
+}
+
+fn merge_pregame_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<PlayerDisplayData>) {
+    let mut existing_by_puuid: HashMap<String, PlayerDisplayData> = existing
+        .drain(..)
+        .map(|player| (player.puuid.clone(), player))
+        .collect();
+    let mut merged = Vec::with_capacity(refreshed.len());
+
+    for latest in refreshed {
+        if let Some(mut current) = existing_by_puuid.remove(&latest.puuid) {
+            if !latest.game_name.is_empty() {
+                current.game_name = latest.game_name;
+            }
+            if !latest.tag_line.is_empty() {
+                current.tag_line = latest.tag_line;
+            }
+            if !latest.team_id.is_empty() {
+                current.team_id = latest.team_id;
+            }
+            current.agent_name = latest.agent_name;
+            current.agent_icon = latest.agent_icon;
+            if latest.account_level > 0 {
+                current.account_level = latest.account_level;
+            }
+            current.is_incognito = latest.is_incognito;
+            merged.push(current);
+        } else {
+            merged.push(latest);
+        }
+    }
+
+    *existing = merged;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_pregame_players;
+    use crate::riot::types::PlayerDisplayData;
+
+    #[test]
+    fn pregame_merge_updates_agent_name_without_dropping_enriched_fields() {
+        let mut existing = vec![PlayerDisplayData {
+            puuid: "player-1".into(),
+            game_name: "OldName".into(),
+            tag_line: "NA1".into(),
+            team_id: "Blue".into(),
+            agent_name: String::new(),
+            rank_name: "Ascendant 1".into(),
+            current_rank: 21,
+            rr: 55,
+            party_number: 2,
+            is_star_user: true,
+            enriched: true,
+            ..Default::default()
+        }];
+
+        let refreshed = vec![PlayerDisplayData {
+            puuid: "player-1".into(),
+            game_name: "NewName".into(),
+            tag_line: "NA1".into(),
+            team_id: "Blue".into(),
+            agent_name: "Jett".into(),
+            ..Default::default()
+        }];
+
+        merge_pregame_players(&mut existing, refreshed);
+
+        assert_eq!(existing.len(), 1);
+        assert_eq!(existing[0].game_name, "NewName");
+        assert_eq!(existing[0].agent_name, "Jett");
+        assert_eq!(existing[0].rank_name, "Ascendant 1");
+        assert_eq!(existing[0].rr, 55);
+        assert_eq!(existing[0].party_number, 2);
+        assert!(existing[0].is_star_user);
+        assert!(existing[0].enriched);
     }
 }

@@ -116,6 +116,13 @@ impl SystemTray {
         append_toggle(
             &behavior_menu,
             &mut toggle_items,
+            "behavior.respect_streamer_mode",
+            "Respect Streamer Mode",
+            config.behavior.respect_streamer_mode,
+        )?;
+        append_toggle(
+            &behavior_menu,
+            &mut toggle_items,
             "behavior.party_finder",
             "Party Finder",
             config.behavior.party_finder,
@@ -128,6 +135,99 @@ impl SystemTray {
             config.behavior.discord_rpc,
         )?;
 
+        let features_menu = Submenu::new("Features", true);
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.last_played",
+            "Last Played",
+            config.features.last_played,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.auto_hide_leaderboard",
+            "Auto Hide Leaderboard",
+            config.features.auto_hide_leaderboard,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.pre_cls",
+            "Pre CLS",
+            config.features.pre_cls,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.game_chat",
+            "Game Chat",
+            config.features.game_chat,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.peak_rank_act",
+            "Peak Rank Act",
+            config.features.peak_rank_act,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.aggregate_rank_rr",
+            "Aggregate Rank RR",
+            config.features.aggregate_rank_rr,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.party_colorblind",
+            "Party Colorblind",
+            config.features.party_colorblind,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.server_id",
+            "Server ID",
+            config.features.server_id,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.short_ranks",
+            "Short Ranks",
+            config.features.short_ranks,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.truncate_names",
+            "Truncate Names",
+            config.features.truncate_names,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.truncate_ranks",
+            "Truncate Ranks",
+            config.features.truncate_ranks,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.roman_numerals",
+            "Roman Numerals",
+            config.features.roman_numerals,
+        )?;
+        append_toggle(
+            &features_menu,
+            &mut toggle_items,
+            "features.starting_side",
+            "Starting Side",
+            config.features.starting_side,
+        )?;
+
         let display_menu = Submenu::new("Display", true);
         append_toggle(
             &display_menu,
@@ -137,11 +237,22 @@ impl SystemTray {
             config.overlay.truncate_skins,
         )?;
 
+        let star_menu = Submenu::new("Star", true);
+        append_toggle(
+            &star_menu,
+            &mut toggle_items,
+            "star.enabled",
+            "Enabled",
+            config.star.enabled,
+        )?;
+
         let quit_item = MenuItem::with_id("quit", "Quit Star Client", true, None);
         let quit_id = quit_item.id().clone();
         menu.append(&columns_menu)?;
         menu.append(&behavior_menu)?;
+        menu.append(&features_menu)?;
         menu.append(&display_menu)?;
+        menu.append(&star_menu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
 
@@ -191,68 +302,105 @@ fn append_toggle(
 }
 
 fn toggle_setting(app_state: &Arc<RwLock<AppState>>, id: &str) -> Option<bool> {
+    macro_rules! toggle {
+        ($value:expr) => {{
+            $value = !$value;
+            $value
+        }};
+    }
+
     let next_value = {
         let mut state = app_state.blocking_write();
         match id {
             "columns.skin" => {
-                state.config.columns.skin = !state.config.columns.skin;
-                state.config.columns.skin
+                toggle!(state.config.columns.skin)
             }
             "columns.rr" => {
-                state.config.columns.rr = !state.config.columns.rr;
-                state.config.columns.rr
+                toggle!(state.config.columns.rr)
             }
             "columns.earned_rr" => {
-                state.config.columns.earned_rr = !state.config.columns.earned_rr;
-                state.config.columns.earned_rr
+                toggle!(state.config.columns.earned_rr)
             }
             "columns.peak_rank" => {
-                state.config.columns.peak_rank = !state.config.columns.peak_rank;
-                state.config.columns.peak_rank
+                toggle!(state.config.columns.peak_rank)
             }
             "columns.previous_rank" => {
-                state.config.columns.previous_rank = !state.config.columns.previous_rank;
-                state.config.columns.previous_rank
+                toggle!(state.config.columns.previous_rank)
             }
             "columns.leaderboard" => {
-                state.config.columns.leaderboard = !state.config.columns.leaderboard;
-                state.config.columns.leaderboard
+                toggle!(state.config.columns.leaderboard)
             }
             "columns.headshot_percent" => {
-                state.config.columns.headshot_percent = !state.config.columns.headshot_percent;
-                state.config.columns.headshot_percent
+                toggle!(state.config.columns.headshot_percent)
             }
             "columns.winrate" => {
-                state.config.columns.winrate = !state.config.columns.winrate;
-                state.config.columns.winrate
+                toggle!(state.config.columns.winrate)
             }
             "columns.kd" => {
-                state.config.columns.kd = !state.config.columns.kd;
-                state.config.columns.kd
+                toggle!(state.config.columns.kd)
             }
             "columns.level" => {
-                state.config.columns.level = !state.config.columns.level;
-                state.config.columns.level
+                toggle!(state.config.columns.level)
             }
             "behavior.auto_show_pregame" => {
-                state.config.behavior.auto_show_pregame = !state.config.behavior.auto_show_pregame;
-                state.config.behavior.auto_show_pregame
+                toggle!(state.config.behavior.auto_show_pregame)
             }
             "behavior.auto_hide_ingame" => {
-                state.config.behavior.auto_hide_ingame = !state.config.behavior.auto_hide_ingame;
-                state.config.behavior.auto_hide_ingame
+                toggle!(state.config.behavior.auto_hide_ingame)
+            }
+            "behavior.respect_streamer_mode" => {
+                toggle!(state.config.behavior.respect_streamer_mode)
             }
             "behavior.party_finder" => {
-                state.config.behavior.party_finder = !state.config.behavior.party_finder;
-                state.config.behavior.party_finder
+                toggle!(state.config.behavior.party_finder)
             }
             "behavior.discord_rpc" => {
-                state.config.behavior.discord_rpc = !state.config.behavior.discord_rpc;
-                state.config.behavior.discord_rpc
+                toggle!(state.config.behavior.discord_rpc)
+            }
+            "features.last_played" => {
+                toggle!(state.config.features.last_played)
+            }
+            "features.auto_hide_leaderboard" => {
+                toggle!(state.config.features.auto_hide_leaderboard)
+            }
+            "features.pre_cls" => {
+                toggle!(state.config.features.pre_cls)
+            }
+            "features.game_chat" => {
+                toggle!(state.config.features.game_chat)
+            }
+            "features.peak_rank_act" => {
+                toggle!(state.config.features.peak_rank_act)
+            }
+            "features.aggregate_rank_rr" => {
+                toggle!(state.config.features.aggregate_rank_rr)
+            }
+            "features.party_colorblind" => {
+                toggle!(state.config.features.party_colorblind)
+            }
+            "features.server_id" => {
+                toggle!(state.config.features.server_id)
+            }
+            "features.short_ranks" => {
+                toggle!(state.config.features.short_ranks)
+            }
+            "features.truncate_names" => {
+                toggle!(state.config.features.truncate_names)
+            }
+            "features.truncate_ranks" => {
+                toggle!(state.config.features.truncate_ranks)
+            }
+            "features.roman_numerals" => {
+                toggle!(state.config.features.roman_numerals)
+            }
+            "features.starting_side" => {
+                toggle!(state.config.features.starting_side)
             }
             "overlay.truncate_skins" => {
-                state.config.overlay.truncate_skins = !state.config.overlay.truncate_skins;
-                state.config.overlay.truncate_skins
+                toggle!(state.config.overlay.truncate_skins)
+            }
+            "star.enabled" => {
+                toggle!(state.config.star.enabled)
             }
             _ => return None,
         }

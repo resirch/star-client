@@ -10,6 +10,8 @@ pub struct Config {
     #[serde(default)]
     pub behavior: BehaviorConfig,
     #[serde(default)]
+    pub features: FeatureConfig,
+    #[serde(default)]
     pub star: StarConfig,
 }
 
@@ -64,6 +66,36 @@ pub struct BehaviorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureConfig {
+    #[serde(default = "bool_true")]
+    pub last_played: bool,
+    #[serde(default = "bool_true")]
+    pub auto_hide_leaderboard: bool,
+    #[serde(default = "bool_false")]
+    pub pre_cls: bool,
+    #[serde(default = "bool_true")]
+    pub game_chat: bool,
+    #[serde(default = "bool_true")]
+    pub peak_rank_act: bool,
+    #[serde(default = "bool_true")]
+    pub aggregate_rank_rr: bool,
+    #[serde(default = "bool_true")]
+    pub party_colorblind: bool,
+    #[serde(default = "bool_false")]
+    pub server_id: bool,
+    #[serde(default = "bool_false")]
+    pub short_ranks: bool,
+    #[serde(default = "bool_true")]
+    pub truncate_names: bool,
+    #[serde(default = "bool_true")]
+    pub truncate_ranks: bool,
+    #[serde(default = "bool_true")]
+    pub roman_numerals: bool,
+    #[serde(default = "bool_false")]
+    pub starting_side: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StarConfig {
     #[serde(default = "bool_true")]
     pub enabled: bool,
@@ -73,6 +105,9 @@ pub struct StarConfig {
 
 fn bool_true() -> bool {
     true
+}
+fn bool_false() -> bool {
+    false
 }
 fn default_hotkey() -> String {
     "F2".into()
@@ -130,6 +165,26 @@ impl Default for BehaviorConfig {
             respect_streamer_mode: true,
             party_finder: true,
             discord_rpc: true,
+        }
+    }
+}
+
+impl Default for FeatureConfig {
+    fn default() -> Self {
+        Self {
+            last_played: true,
+            auto_hide_leaderboard: true,
+            pre_cls: false,
+            game_chat: true,
+            peak_rank_act: true,
+            aggregate_rank_rr: true,
+            party_colorblind: true,
+            server_id: false,
+            short_ranks: false,
+            truncate_names: true,
+            truncate_ranks: true,
+            roman_numerals: true,
+            starting_side: false,
         }
     }
 }

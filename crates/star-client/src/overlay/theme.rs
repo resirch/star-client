@@ -1,4 +1,5 @@
 use egui::{Color32, FontFamily, FontId, Rounding, Stroke, Vec2};
+use std::path::Path;
 
 pub const BG_COLOR: Color32 = Color32::from_rgba_premultiplied(15, 15, 20, 220);
 pub const HEADER_BG: Color32 = Color32::from_rgba_premultiplied(25, 25, 35, 240);
@@ -45,6 +46,100 @@ pub fn small_font() -> FontId {
 
 pub fn star_font() -> FontId {
     FontId::new(14.0, FontFamily::Proportional)
+}
+
+pub fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded_fonts = Vec::new();
+
+    for source in system_font_fallbacks() {
+        let path = Path::new(source.path);
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+
+        let mut font_data = egui::FontData::from_owned(bytes);
+        font_data.index = source.index;
+        fonts.font_data.insert(source.name.into(), font_data);
+        loaded_fonts.push(source.name);
+    }
+
+    if !loaded_fonts.is_empty() {
+        if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
+            family.extend(loaded_fonts.iter().map(|name| (*name).into()));
+        }
+        if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+            family.extend(loaded_fonts.iter().map(|name| (*name).into()));
+        }
+
+        tracing::info!("Loaded multilingual font fallbacks: {}", loaded_fonts.join(", "));
+    } else {
+        tracing::warn!("No system font fallbacks were loaded; non-Latin glyph coverage may be limited");
+    }
+
+    ctx.set_fonts(fonts);
+}
+
+struct SystemFontSource {
+    name: &'static str,
+    path: &'static str,
+    index: u32,
+}
+
+#[cfg(target_os = "windows")]
+fn system_font_fallbacks() -> &'static [SystemFontSource] {
+    &[
+        SystemFontSource {
+            name: "system-segoe-ui",
+            path: r"C:\Windows\Fonts\segoeui.ttf",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-malgun-gothic",
+            path: r"C:\Windows\Fonts\malgun.ttf",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-microsoft-yahei",
+            path: r"C:\Windows\Fonts\msyh.ttc",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-microsoft-jhenghei",
+            path: r"C:\Windows\Fonts\msjh.ttc",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-yu-gothic",
+            path: r"C:\Windows\Fonts\YuGothR.ttc",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-ms-gothic",
+            path: r"C:\Windows\Fonts\msgothic.ttc",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-simsun",
+            path: r"C:\Windows\Fonts\simsun.ttc",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-nirmala-ui",
+            path: r"C:\Windows\Fonts\Nirmala.ttc",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-leelawadee-ui",
+            path: r"C:\Windows\Fonts\LeelawUI.ttf",
+            index: 0,
+        },
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_font_fallbacks() -> &'static [SystemFontSource] {
+    &[]
 }
 
 pub fn table_rounding() -> Rounding {

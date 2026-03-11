@@ -72,6 +72,11 @@ fn main() {
                 riot_auth.shard
             );
 
+            {
+                let mut state = app_state_bg.write().await;
+                state.local_puuid = riot_auth.puuid.clone();
+            }
+
             let mut api_client = RiotApiClient::new(riot_auth.clone()).expect("API client");
             if let Err(e) = api_client.fetch_client_version().await {
                 tracing::warn!("Could not fetch client version: {}", e);
@@ -126,6 +131,7 @@ fn run_overlay(
             if !self.initialized {
                 self.initialized = true;
                 init_window(glfw_backend);
+                overlay::theme::configure_fonts(egui_context);
             }
 
             unsafe {
@@ -203,6 +209,7 @@ fn run_overlay(
                         egui_context,
                         &state.game_state,
                         &state.players,
+                        &state.local_puuid,
                         &state.config,
                     );
                 }
