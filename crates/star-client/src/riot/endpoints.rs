@@ -77,8 +77,5 @@ pub fn local_websocket(port: u16, password: &str) -> String {
         &base64::engine::general_purpose::STANDARD,
         format!("riot:{}", password),
     );
-    format!(
-        "wss://127.0.0.1:{}/?authorization=Basic {}",
-        port, basic
-    )
+    format!("wss://127.0.0.1:{}/?authorization=Basic {}", port, basic)
 }

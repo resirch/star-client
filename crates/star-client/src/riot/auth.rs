@@ -7,13 +7,10 @@ pub async fn authenticate(lockfile: &LockfileData) -> Result<RiotAuth> {
         .danger_accept_invalid_certs(true)
         .build()?;
 
-    let basic_auth = base64::engine::general_purpose::STANDARD
-        .encode(format!("riot:{}", lockfile.password));
+    let basic_auth =
+        base64::engine::general_purpose::STANDARD.encode(format!("riot:{}", lockfile.password));
 
-    let url = format!(
-        "https://127.0.0.1:{}/entitlements/v1/token",
-        lockfile.port
-    );
+    let url = format!("https://127.0.0.1:{}/entitlements/v1/token", lockfile.port);
 
     let resp: EntitlementsResponse = client
         .get(&url)

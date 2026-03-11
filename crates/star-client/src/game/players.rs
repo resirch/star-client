@@ -21,10 +21,7 @@ pub async fn fetch_pregame_players(
         }
     }
 
-    tracing::debug!(
-        "Pregame ally_team puuids: {}",
-        puuids.len()
-    );
+    tracing::debug!("Pregame ally_team puuids: {}", puuids.len());
     let names = api.get_names(&puuids).await.unwrap_or_default();
     tracing::debug!("Pregame name service returned {} entries", names.len());
     let name_map: HashMap<String, &NameServiceEntry> =
@@ -70,15 +67,17 @@ pub async fn fetch_coregame_players(
     let name_map: HashMap<String, &NameServiceEntry> =
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
-    let loadouts = api
-        .get_coregame_loadouts(match_id)
-        .await
-        .ok();
+    let loadouts = api.get_coregame_loadouts(match_id).await.ok();
     tracing::debug!("Coregame loadouts available: {}", loadouts.is_some());
 
     let loadout_map: HashMap<String, &PlayerLoadout> = loadouts
         .as_ref()
-        .map(|l| l.loadouts.iter().map(|lo| (lo.subject.clone(), lo)).collect())
+        .map(|l| {
+            l.loadouts
+                .iter()
+                .map(|lo| (lo.subject.clone(), lo))
+                .collect()
+        })
         .unwrap_or_default();
 
     let mut players = Vec::new();
@@ -97,8 +96,7 @@ pub async fn fetch_coregame_players(
         display.team_id = p.team_i_d.clone().unwrap_or_default();
 
         if let Some(loadout) = loadout_map.get(&p.subject) {
-            display.skin_name =
-                extract_weapon_skin(api, loadout, &config.overlay.weapon);
+            display.skin_name = extract_weapon_skin(api, loadout, &config.overlay.weapon);
         }
 
         players.push(display);
@@ -196,8 +194,7 @@ fn extract_rank_data(
                         display.wins = info.number_of_wins.unwrap_or(0);
                         display.games = info.number_of_games.unwrap_or(0);
                         if display.games > 0 {
-                            display.winrate =
-                                (display.wins as f64 / display.games as f64) * 100.0;
+                            display.winrate = (display.wins as f64 / display.games as f64) * 100.0;
                         }
                     }
                 }
@@ -328,11 +325,7 @@ fn aggregate_damage(details: &MatchDetailsResponse, puuid: &str) -> (i32, i32, i
     (hs, bs, ls)
 }
 
-fn extract_weapon_skin(
-    api: &RiotApiClient,
-    loadout: &PlayerLoadout,
-    weapon_name: &str,
-) -> String {
+fn extract_weapon_skin(api: &RiotApiClient, loadout: &PlayerLoadout, weapon_name: &str) -> String {
     let weapon_uuid = match weapon_name.to_lowercase().as_str() {
         "vandal" => "9c82e19d-4575-0200-1a81-3eacf00cf872",
         "phantom" => "ee8e8d15-496b-07ac-f604-8f8488911e76",
@@ -343,7 +336,7 @@ fn extract_weapon_skin(
         _ => "9c82e19d-4575-0200-1a81-3eacf00cf872", // Default to Vandal
     };
 
-    if let Some(items) = &loadout.items {
+    if let Some(items) = loadout.items() {
         if let Some(item) = items.get(weapon_uuid) {
             if let Some(sockets) = &item.sockets {
                 for socket in sockets.values() {

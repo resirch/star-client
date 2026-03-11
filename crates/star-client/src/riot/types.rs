@@ -307,6 +307,23 @@ pub struct LoadoutsResponse {
 #[serde(rename_all = "PascalCase")]
 pub struct PlayerLoadout {
     pub subject: Puuid,
+    pub character_i_d: Option<String>,
+    pub loadout: Option<EquippedLoadout>,
+    pub items: Option<HashMap<String, LoadoutItem>>,
+}
+
+impl PlayerLoadout {
+    pub fn items(&self) -> Option<&HashMap<String, LoadoutItem>> {
+        self.loadout
+            .as_ref()
+            .and_then(|loadout| loadout.items.as_ref())
+            .or(self.items.as_ref())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct EquippedLoadout {
     pub items: Option<HashMap<String, LoadoutItem>>,
 }
 
@@ -478,23 +495,86 @@ pub const RANK_NAMES: &[&str] = &[
 ];
 
 pub fn rank_name(tier: i32) -> &'static str {
-    RANK_NAMES
-        .get(tier as usize)
-        .copied()
-        .unwrap_or("Unranked")
+    RANK_NAMES.get(tier as usize).copied().unwrap_or("Unranked")
 }
 
 pub fn rank_color(tier: i32) -> egui::Color32 {
     match tier {
-        3..=5 => egui::Color32::from_rgb(110, 117, 130),   // Iron
-        6..=8 => egui::Color32::from_rgb(180, 130, 80),    // Bronze
-        9..=11 => egui::Color32::from_rgb(175, 180, 190),  // Silver
-        12..=14 => egui::Color32::from_rgb(218, 165, 32),  // Gold
-        15..=17 => egui::Color32::from_rgb(50, 180, 180),  // Platinum
+        3..=5 => egui::Color32::from_rgb(110, 117, 130), // Iron
+        6..=8 => egui::Color32::from_rgb(180, 130, 80),  // Bronze
+        9..=11 => egui::Color32::from_rgb(175, 180, 190), // Silver
+        12..=14 => egui::Color32::from_rgb(218, 165, 32), // Gold
+        15..=17 => egui::Color32::from_rgb(50, 180, 180), // Platinum
         18..=20 => egui::Color32::from_rgb(180, 100, 220), // Diamond
-        21..=23 => egui::Color32::from_rgb(50, 180, 100),  // Ascendant
-        24..=26 => egui::Color32::from_rgb(200, 60, 80),   // Immortal
-        27 => egui::Color32::from_rgb(255, 255, 150),      // Radiant
-        _ => egui::Color32::from_rgb(150, 150, 150),       // Unranked
+        21..=23 => egui::Color32::from_rgb(50, 180, 100), // Ascendant
+        24..=26 => egui::Color32::from_rgb(200, 60, 80), // Immortal
+        27 => egui::Color32::from_rgb(255, 255, 150),    // Radiant
+        _ => egui::Color32::from_rgb(150, 150, 150),     // Unranked
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LoadoutsResponse;
+
+    #[test]
+    fn loadouts_deserialize_nested_game_shape() {
+        let json = r#"
+        {
+          "Loadouts": [
+            {
+              "Subject": "player-1",
+              "CharacterID": "agent-1",
+              "Loadout": {
+                "Items": {
+                  "weapon-1": {
+                    "Sockets": {
+                      "bcef87d6-209b-46c6-8b19-fbe40bd95abc": {
+                        "Item": {
+                          "ID": "skin-1"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }"#;
+
+        let parsed: LoadoutsResponse = serde_json::from_str(json).unwrap();
+        let loadout = &parsed.loadouts[0];
+        let items = loadout.items().unwrap();
+
+        assert!(loadout.character_i_d.as_deref() == Some("agent-1"));
+        assert!(items.contains_key("weapon-1"));
+    }
+
+    #[test]
+    fn loadouts_deserialize_flat_shape() {
+        let json = r#"
+        {
+          "Loadouts": [
+            {
+              "Subject": "player-1",
+              "Items": {
+                "weapon-1": {
+                  "Sockets": {
+                    "bcef87d6-209b-46c6-8b19-fbe40bd95abc": {
+                      "Item": {
+                        "ID": "skin-1"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }"#;
+
+        let parsed: LoadoutsResponse = serde_json::from_str(json).unwrap();
+        let items = parsed.loadouts[0].items().unwrap();
+
+        assert!(items.contains_key("weapon-1"));
     }
 }

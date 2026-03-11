@@ -55,10 +55,7 @@ impl RiotApiClient {
                 .unwrap(),
         );
         if !self.client_version.is_empty() {
-            headers.insert(
-                "X-Riot-ClientVersion",
-                self.client_version.parse().unwrap(),
-            );
+            headers.insert("X-Riot-ClientVersion", self.client_version.parse().unwrap());
         }
         headers
     }
@@ -69,10 +66,7 @@ impl RiotApiClient {
             &base64::engine::general_purpose::STANDARD,
             format!("riot:{}", self.auth.lockfile.password),
         );
-        headers.insert(
-            "Authorization",
-            format!("Basic {}", basic).parse().unwrap(),
-        );
+        headers.insert("Authorization", format!("Basic {}", basic).parse().unwrap());
         headers
     }
 
@@ -96,9 +90,11 @@ impl RiotApiClient {
         for p in presences {
             if p.puuid == self.auth.puuid && p.product == "valorant" {
                 if let Some(priv_b64) = &p.private {
-                    let decoded =
-                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, priv_b64)
-                            .unwrap_or_default();
+                    let decoded = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        priv_b64,
+                    )
+                    .unwrap_or_default();
                     let parsed: PrivatePresence =
                         serde_json::from_slice(&decoded).unwrap_or_default();
                     return Ok(Some(parsed));
@@ -352,8 +348,7 @@ impl RiotApiClient {
             .await?;
         if let Some(agents) = resp.data {
             for agent in agents {
-                self.agent_cache
-                    .insert(agent.uuid.to_lowercase(), agent);
+                self.agent_cache.insert(agent.uuid.to_lowercase(), agent);
             }
         }
         Ok(())
@@ -379,8 +374,7 @@ impl RiotApiClient {
             .await?;
         if let Some(skins) = resp.data {
             for skin in skins {
-                self.skin_cache
-                    .insert(skin.uuid.to_lowercase(), skin);
+                self.skin_cache.insert(skin.uuid.to_lowercase(), skin);
             }
         }
         Ok(())

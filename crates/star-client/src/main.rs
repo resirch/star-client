@@ -73,8 +73,7 @@ fn main() {
                 riot_auth.shard
             );
 
-            let mut api_client =
-                RiotApiClient::new(riot_auth.clone()).expect("API client");
+            let mut api_client = RiotApiClient::new(riot_auth.clone()).expect("API client");
             if let Err(e) = api_client.fetch_client_version().await {
                 tracing::warn!("Could not fetch client version: {}", e);
             }
@@ -107,18 +106,19 @@ fn run_overlay(
         quit_flag: Arc<AtomicBool>,
         key_held: Arc<AtomicBool>,
         initialized: bool,
+        shown: bool,
     }
 
     impl EguiOverlay for StarOverlay {
-        fn gui_run(
+        fn run(
             &mut self,
             egui_context: &egui::Context,
             default_gfx_backend: &mut egui_overlay::egui_render_three_d::ThreeDBackend,
             glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
-        ) {
+        ) -> Option<(egui::PlatformOutput, std::time::Duration)> {
             if self.quit_flag.load(Ordering::Relaxed) {
                 glfw_backend.window.set_should_close(true);
-                return;
+                return None;
             }
 
             if !self.initialized {
@@ -134,8 +134,57 @@ fn run_overlay(
                     .clear_color(0.0, 0.0, 0.0, 0.0);
             }
 
-            // This overlay is always visual-only, so keep the entire window fully click-through.
             glfw_backend.set_passthrough(true);
+
+            let input = glfw_backend.take_raw_input();
+            default_gfx_backend.prepare_frame(|| {
+                let latest_size = glfw_backend.window.get_framebuffer_size();
+                [latest_size.0 as _, latest_size.1 as _]
+            });
+
+            egui_context.begin_pass(input);
+            self.gui_run(egui_context, default_gfx_backend, glfw_backend);
+
+            let egui::FullOutput {
+                platform_output,
+                textures_delta,
+                shapes,
+                pixels_per_point,
+                viewport_output,
+            } = egui_context.end_pass();
+            let meshes = egui_context.tessellate(shapes, pixels_per_point);
+            let repaint_after = viewport_output
+                .into_iter()
+                .map(|f| f.1.repaint_delay)
+                .collect::<Vec<std::time::Duration>>()[0];
+
+            default_gfx_backend.render_egui(
+                meshes,
+                textures_delta,
+                glfw_backend.window_size_logical,
+            );
+
+            use egui_overlay::egui_window_glfw_passthrough::glfw::Context;
+            glfw_backend.window.swap_buffers();
+
+            if !self.shown {
+                glfw_backend.window.show();
+                self.shown = true;
+            }
+
+            Some((platform_output, repaint_after))
+        }
+
+        fn gui_run(
+            &mut self,
+            egui_context: &egui::Context,
+            _default_gfx_backend: &mut egui_overlay::egui_render_three_d::ThreeDBackend,
+            glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+        ) {
+            if self.quit_flag.load(Ordering::Relaxed) {
+                glfw_backend.window.set_should_close(true);
+                return;
+            }
 
             let hotkey_active = self.key_held.load(Ordering::Relaxed);
 
@@ -155,17 +204,62 @@ fn run_overlay(
         }
     }
 
-    egui_overlay::start(StarOverlay {
+    start_overlay(StarOverlay {
         app_state,
         quit_flag,
         key_held,
         initialized: false,
+        shown: false,
     });
 }
 
-fn init_window(
-    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
-) {
+fn start_overlay<T: egui_overlay::EguiOverlay + 'static>(user_data: T) {
+    use egui_overlay::egui_render_three_d::ThreeDBackend;
+    use egui_overlay::egui_window_glfw_passthrough::{
+        glfw::{ClientApiHint, WindowHint},
+        GlfwBackend, GlfwConfig,
+    };
+    use egui_overlay::OverlayApp;
+
+    let mut glfw_backend = GlfwBackend::new(GlfwConfig {
+        glfw_callback: Box::new(|gtx| {
+            gtx.window_hint(WindowHint::ScaleToMonitor(true));
+            gtx.window_hint(WindowHint::Decorated(false));
+            gtx.window_hint(WindowHint::Floating(true));
+            gtx.window_hint(WindowHint::Focused(false));
+            gtx.window_hint(WindowHint::FocusOnShow(false));
+            gtx.window_hint(WindowHint::MousePassthrough(true));
+            gtx.window_hint(WindowHint::Visible(false));
+            gtx.window_hint(WindowHint::ClientApi(ClientApiHint::OpenGl));
+        }),
+        opengl_window: Some(true),
+        transparent_window: Some(true),
+        ..Default::default()
+    });
+
+    glfw_backend.window.set_floating(true);
+    glfw_backend.window.set_decorated(false);
+    glfw_backend.window.set_focus_on_show(false);
+    glfw_backend.window.set_mouse_passthrough(true);
+
+    let latest_size = glfw_backend.window.get_framebuffer_size();
+    let latest_size = [latest_size.0 as _, latest_size.1 as _];
+    let default_gfx_backend = ThreeDBackend::new(
+        egui_overlay::egui_render_three_d::ThreeDConfig::default(),
+        |s| glfw_backend.get_proc_address(s),
+        latest_size,
+    );
+
+    OverlayApp {
+        user_data,
+        egui_context: Default::default(),
+        default_gfx_backend,
+        glfw_backend,
+    }
+    .enter_event_loop();
+}
+
+fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend) {
     glfw_backend.window.set_floating(true);
 
     #[cfg(target_os = "windows")]
@@ -184,9 +278,7 @@ fn init_window(
                 SetWindowLongPtrW(
                     hwnd,
                     GWL_EXSTYLE,
-                    (ex_style
-                        | WS_EX_TOOLWINDOW as isize
-                        | WS_EX_TRANSPARENT as isize)
+                    (ex_style | WS_EX_TOOLWINDOW as isize | WS_EX_TRANSPARENT as isize)
                         & !(WS_EX_APPWINDOW as isize),
                 );
 

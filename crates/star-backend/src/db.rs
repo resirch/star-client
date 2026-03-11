@@ -45,12 +45,11 @@ pub async fn upsert_user(
 }
 
 pub async fn update_heartbeat(pool: &SqlitePool, session_token: &str) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE users SET last_heartbeat = datetime('now') WHERE session_token = $1",
-    )
-    .bind(session_token)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE users SET last_heartbeat = datetime('now') WHERE session_token = $1")
+            .bind(session_token)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -85,10 +84,9 @@ pub async fn count_active_users(pool: &SqlitePool) -> Result<i64> {
 }
 
 pub async fn cleanup_stale(pool: &SqlitePool) -> Result<u64> {
-    let result = sqlx::query(
-        "DELETE FROM users WHERE last_heartbeat < datetime('now', '-30 days')",
-    )
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM users WHERE last_heartbeat < datetime('now', '-30 days')")
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected())
 }

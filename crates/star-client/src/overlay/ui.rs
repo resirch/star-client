@@ -34,7 +34,8 @@ pub fn render_overlay(
     }
 
     let screen = ctx.screen_rect();
-    let tw = table_width(columns);
+    let show_leaderboard = leaderboard_column_visible(columns, players);
+    let tw = table_width(columns, show_leaderboard);
     let x = (screen.width() - tw) / 2.0;
     let y = 60.0;
 
@@ -52,11 +53,10 @@ pub fn render_overlay(
                     ui.set_min_width(tw);
                     title_bar(ui, game_state);
                     ui.add_space(4.0);
-                    header_row(ui, columns);
+                    header_row(ui, columns, show_leaderboard);
                     ui.add_space(2.0);
 
-                    let my_team =
-                        players.first().map(|p| p.team_id.as_str()).unwrap_or("");
+                    let my_team = players.first().map(|p| p.team_id.as_str()).unwrap_or("");
                     let (allies, enemies): (Vec<_>, Vec<_>) = players
                         .iter()
                         .partition(|p| p.team_id == my_team || my_team.is_empty());
@@ -64,7 +64,7 @@ pub fn render_overlay(
                     if !allies.is_empty() {
                         team_label(ui, "YOUR TEAM");
                         for p in &allies {
-                            player_row(ui, p, columns, true);
+                            player_row(ui, p, columns, true, show_leaderboard);
                         }
                     }
 
@@ -72,25 +72,49 @@ pub fn render_overlay(
                         ui.add_space(6.0);
                         team_label(ui, "ENEMY TEAM");
                         for p in &enemies {
-                            player_row(ui, p, columns, false);
+                            player_row(ui, p, columns, false, show_leaderboard);
                         }
                     }
                 });
         });
 }
 
-fn table_width(c: &ColumnConfig) -> f32 {
+fn leaderboard_column_visible(c: &ColumnConfig, players: &[PlayerDisplayData]) -> bool {
+    c.leaderboard && players.iter().any(|p| p.leaderboard_position > 0)
+}
+
+fn table_width(c: &ColumnConfig, show_leaderboard: bool) -> f32 {
     let mut w = PARTY_W + STAR_W + AGENT_W + NAME_W + RANK_W;
-    if c.rr { w += RR_W; }
-    if c.peak_rank { w += PEAK_W; }
-    if c.previous_rank { w += PREV_W; }
-    if c.leaderboard { w += LB_W; }
-    if c.kd { w += KD_W; }
-    if c.headshot_percent { w += HS_W; }
-    if c.winrate { w += WR_W; }
-    if c.earned_rr { w += ERR_W; }
-    if c.level { w += LVL_W; }
-    if c.skin { w += SKIN_W; }
+    if c.rr {
+        w += RR_W;
+    }
+    if c.peak_rank {
+        w += PEAK_W;
+    }
+    if c.previous_rank {
+        w += PREV_W;
+    }
+    if show_leaderboard {
+        w += LB_W;
+    }
+    if c.kd {
+        w += KD_W;
+    }
+    if c.headshot_percent {
+        w += HS_W;
+    }
+    if c.winrate {
+        w += WR_W;
+    }
+    if c.earned_rr {
+        w += ERR_W;
+    }
+    if c.level {
+        w += LVL_W;
+    }
+    if c.skin {
+        w += SKIN_W;
+    }
     w + 12.0
 }
 
@@ -111,11 +135,14 @@ fn title_bar(ui: &mut Ui, state: &GameState) {
     });
 }
 
-fn header_row(ui: &mut Ui, c: &ColumnConfig) {
+fn header_row(ui: &mut Ui, c: &ColumnConfig, show_leaderboard: bool) {
     let origin = ui.cursor().min;
     let full_w = ui.available_width();
-    ui.painter()
-        .rect_filled(Rect::from_min_size(origin, Vec2::new(full_w, HDR_H)), 2.0, theme::HEADER_BG);
+    ui.painter().rect_filled(
+        Rect::from_min_size(origin, Vec2::new(full_w, HDR_H)),
+        2.0,
+        theme::HEADER_BG,
+    );
 
     ui.horizontal(|ui| {
         ui.set_height(HDR_H);
@@ -127,16 +154,36 @@ fn header_row(ui: &mut Ui, c: &ColumnConfig) {
         hdr_cell(ui, "AGENT", AGENT_W, &f, clr);
         hdr_cell(ui, "NAME", NAME_W, &f, clr);
         hdr_cell(ui, "RANK", RANK_W, &f, clr);
-        if c.rr { hdr_cell(ui, "RR", RR_W, &f, clr); }
-        if c.peak_rank { hdr_cell(ui, "PEAK", PEAK_W, &f, clr); }
-        if c.previous_rank { hdr_cell(ui, "PREV", PREV_W, &f, clr); }
-        if c.leaderboard { hdr_cell(ui, "#", LB_W, &f, clr); }
-        if c.kd { hdr_cell(ui, "K/D", KD_W, &f, clr); }
-        if c.headshot_percent { hdr_cell(ui, "HS%", HS_W, &f, clr); }
-        if c.winrate { hdr_cell(ui, "WR%", WR_W, &f, clr); }
-        if c.earned_rr { hdr_cell(ui, "ΔRR", ERR_W, &f, clr); }
-        if c.level { hdr_cell(ui, "LVL", LVL_W, &f, clr); }
-        if c.skin { hdr_cell(ui, "SKIN", SKIN_W, &f, clr); }
+        if c.rr {
+            hdr_cell(ui, "RR", RR_W, &f, clr);
+        }
+        if c.peak_rank {
+            hdr_cell(ui, "PEAK", PEAK_W, &f, clr);
+        }
+        if c.previous_rank {
+            hdr_cell(ui, "PREV", PREV_W, &f, clr);
+        }
+        if show_leaderboard {
+            hdr_cell(ui, "#", LB_W, &f, clr);
+        }
+        if c.kd {
+            hdr_cell(ui, "K/D", KD_W, &f, clr);
+        }
+        if c.headshot_percent {
+            hdr_cell(ui, "HS%", HS_W, &f, clr);
+        }
+        if c.winrate {
+            hdr_cell(ui, "WR%", WR_W, &f, clr);
+        }
+        if c.earned_rr {
+            hdr_cell(ui, "ΔRR", ERR_W, &f, clr);
+        }
+        if c.level {
+            hdr_cell(ui, "LVL", LVL_W, &f, clr);
+        }
+        if c.skin {
+            hdr_cell(ui, "SKIN", SKIN_W, &f, clr);
+        }
     });
 }
 
@@ -163,12 +210,25 @@ fn team_label(ui: &mut Ui, text: &str) {
     ui.add_space(1.0);
 }
 
-fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: bool) {
-    let bg = if is_ally { theme::ROW_BG_ALLY } else { theme::ROW_BG_ENEMY };
+fn player_row(
+    ui: &mut Ui,
+    p: &PlayerDisplayData,
+    c: &ColumnConfig,
+    is_ally: bool,
+    show_leaderboard: bool,
+) {
+    let bg = if is_ally {
+        theme::ROW_BG_ALLY
+    } else {
+        theme::ROW_BG_ENEMY
+    };
     let origin = ui.cursor().min;
     let full_w = ui.available_width();
-    ui.painter()
-        .rect_filled(Rect::from_min_size(origin, Vec2::new(full_w, ROW_H)), 2.0, bg);
+    ui.painter().rect_filled(
+        Rect::from_min_size(origin, Vec2::new(full_w, ROW_H)),
+        2.0,
+        bg,
+    );
 
     ui.horizontal(|ui| {
         ui.set_height(ROW_H);
@@ -179,7 +239,8 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         let (rect, _) = ui.allocate_exact_size(Vec2::new(PARTY_W, ROW_H), egui::Sense::hover());
         if p.party_number > 0 {
             let bar = Rect::from_center_size(rect.center(), Vec2::new(4.0, ROW_H - 4.0));
-            ui.painter().rect_filled(bar, 2.0, theme::party_color(p.party_number));
+            ui.painter()
+                .rect_filled(bar, 2.0, theme::party_color(p.party_number));
         }
 
         // Star
@@ -195,7 +256,13 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
         }
 
         // Agent
-        text_cell(ui, &p.agent_name, AGENT_W, &f, theme::agent_color(&p.agent_name));
+        text_cell(
+            ui,
+            &p.agent_name,
+            AGENT_W,
+            &f,
+            theme::agent_color(&p.agent_name),
+        );
 
         // Name
         let name = if p.is_incognito {
@@ -214,7 +281,11 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
 
         if c.rr {
             let t = if p.enriched {
-                if p.current_rank > 0 { format!("{} RR", p.rr) } else { "-".into() }
+                if p.current_rank > 0 {
+                    format!("{} RR", p.rr)
+                } else {
+                    "-".into()
+                }
             } else {
                 loading.clone()
             };
@@ -223,7 +294,11 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
 
         if c.peak_rank {
             if p.enriched {
-                let t = if p.peak_rank > 0 { &p.peak_rank_name } else { "-" };
+                let t = if p.peak_rank > 0 {
+                    &p.peak_rank_name
+                } else {
+                    "-"
+                };
                 text_cell(ui, t, PEAK_W, &f, rank_color(p.peak_rank));
             } else {
                 text_cell(ui, &loading, PEAK_W, &f, theme::TEXT_MUTED);
@@ -232,14 +307,18 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
 
         if c.previous_rank {
             if p.enriched {
-                let t = if p.previous_rank > 0 { &p.previous_rank_name } else { "-" };
+                let t = if p.previous_rank > 0 {
+                    &p.previous_rank_name
+                } else {
+                    "-"
+                };
                 text_cell(ui, t, PREV_W, &f, rank_color(p.previous_rank));
             } else {
                 text_cell(ui, &loading, PREV_W, &f, theme::TEXT_MUTED);
             }
         }
 
-        if c.leaderboard {
+        if show_leaderboard {
             let t = if p.enriched {
                 if p.leaderboard_position > 0 {
                     format!("#{}", p.leaderboard_position)
@@ -254,11 +333,19 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
 
         if c.kd {
             let t = if p.enriched {
-                if p.kd > 0.0 { format!("{:.2}", p.kd) } else { "-".into() }
+                if p.kd > 0.0 {
+                    format!("{:.2}", p.kd)
+                } else {
+                    "-".into()
+                }
             } else {
                 loading.clone()
             };
-            let clr = if p.enriched { theme::kd_color(p.kd) } else { theme::TEXT_MUTED };
+            let clr = if p.enriched {
+                theme::kd_color(p.kd)
+            } else {
+                theme::TEXT_MUTED
+            };
             text_cell(ui, &t, KD_W, &f, clr);
         }
 
@@ -272,17 +359,29 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
             } else {
                 loading.clone()
             };
-            let clr = if p.enriched { theme::hs_color(p.headshot_percent) } else { theme::TEXT_MUTED };
+            let clr = if p.enriched {
+                theme::hs_color(p.headshot_percent)
+            } else {
+                theme::TEXT_MUTED
+            };
             text_cell(ui, &t, HS_W, &f, clr);
         }
 
         if c.winrate {
             let t = if p.enriched {
-                if p.games > 0 { format!("{:.0}%", p.winrate) } else { "-".into() }
+                if p.games > 0 {
+                    format!("{:.0}%", p.winrate)
+                } else {
+                    "-".into()
+                }
             } else {
                 loading.clone()
             };
-            let clr = if p.enriched { theme::winrate_color(p.winrate) } else { theme::TEXT_MUTED };
+            let clr = if p.enriched {
+                theme::winrate_color(p.winrate)
+            } else {
+                theme::TEXT_MUTED
+            };
             text_cell(ui, &t, WR_W, &f, clr);
         }
 
@@ -296,12 +395,20 @@ fn player_row(ui: &mut Ui, p: &PlayerDisplayData, c: &ColumnConfig, is_ally: boo
             } else {
                 loading.clone()
             };
-            let clr = if p.enriched { theme::rr_change_color(p.earned_rr) } else { theme::TEXT_MUTED };
+            let clr = if p.enriched {
+                theme::rr_change_color(p.earned_rr)
+            } else {
+                theme::TEXT_MUTED
+            };
             text_cell(ui, &t, ERR_W, &f, clr);
         }
 
         if c.level {
-            let t = if p.account_level > 0 { p.account_level.to_string() } else { "-".into() };
+            let t = if p.account_level > 0 {
+                p.account_level.to_string()
+            } else {
+                "-".into()
+            };
             text_cell(ui, &t, LVL_W, &f, theme::TEXT_SECONDARY);
         }
 

@@ -65,8 +65,9 @@ pub async fn run_data_loop(
         }
 
         let mut api_guard = api.write().await;
-        let new_state =
-            state::detect_game_state(&api_guard).await.unwrap_or(GameState::Menu);
+        let new_state = state::detect_game_state(&api_guard)
+            .await
+            .unwrap_or(GameState::Menu);
 
         let config = {
             let state = app_state.read().await;
@@ -149,8 +150,7 @@ pub async fn run_data_loop(
             if let Some(history) = &history {
                 for p in &players_data {
                     if !p.game_name.is_empty() {
-                        let _ =
-                            history.record_encounter(&p.puuid, &p.game_name, &p.tag_line);
+                        let _ = history.record_encounter(&p.puuid, &p.game_name, &p.tag_line);
                     }
                 }
             }
@@ -243,12 +243,8 @@ pub async fn run_data_loop(
             };
 
             if !unenriched.is_empty() {
-                tracing::debug!(
-                    "Re-enriching {} incomplete players",
-                    unenriched.len()
-                );
-                let current_season =
-                    api_guard.get_current_season_id().await.ok().flatten();
+                tracing::debug!("Re-enriching {} incomplete players", unenriched.len());
+                let current_season = api_guard.get_current_season_id().await.ok().flatten();
 
                 for (idx, puuid) in &unenriched {
                     let mut player = {
@@ -259,13 +255,10 @@ pub async fn run_data_loop(
                         state.players[*idx].clone()
                     };
 
-                    players::enrich_player(&api_guard, &mut player, &current_season)
-                        .await;
+                    players::enrich_player(&api_guard, &mut player, &current_season).await;
 
                     let mut state = app_state.write().await;
-                    if *idx < state.players.len()
-                        && state.players[*idx].puuid == *puuid
-                    {
+                    if *idx < state.players.len() && state.players[*idx].puuid == *puuid {
                         state.players[*idx] = player;
                     }
                 }

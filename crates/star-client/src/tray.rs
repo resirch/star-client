@@ -24,15 +24,13 @@ impl SystemTray {
             .build()?;
 
         let quit_flag_clone = Arc::clone(&quit_flag);
-        std::thread::spawn(move || {
-            loop {
-                if let Ok(event) = MenuEvent::receiver().try_recv() {
-                    if event.id() == &quit_id {
-                        quit_flag_clone.store(true, Ordering::Relaxed);
-                    }
+        std::thread::spawn(move || loop {
+            if let Ok(event) = MenuEvent::receiver().try_recv() {
+                if event.id() == &quit_id {
+                    quit_flag_clone.store(true, Ordering::Relaxed);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         });
 
         Ok(Self {
@@ -58,9 +56,9 @@ fn load_tray_icon() -> tray_icon::Icon {
             let dx = (x as f32 - 7.5).abs();
             let dy = (y as f32 - 7.5).abs();
             if dx + dy < 8.0 {
-                rgba[idx] = 255;     // R
+                rgba[idx] = 255; // R
                 rgba[idx + 1] = 215; // G
-                rgba[idx + 2] = 0;   // B
+                rgba[idx + 2] = 0; // B
                 rgba[idx + 3] = 255; // A
             }
         }

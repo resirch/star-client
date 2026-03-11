@@ -62,9 +62,7 @@ impl DiscordRpc {
         let (details, state_text) = match state {
             GameState::Menu => ("In Menus".to_string(), rank_name.to_string()),
             GameState::Pregame { .. } => {
-                let map = context
-                    .map(|c| c.map.name.as_str())
-                    .unwrap_or("Unknown");
+                let map = context.map(|c| c.map.name.as_str()).unwrap_or("Unknown");
                 let mode = context
                     .map(|c| mode_display_name(&c.queue))
                     .unwrap_or("Unknown");
@@ -74,9 +72,7 @@ impl DiscordRpc {
                 )
             }
             GameState::Ingame { .. } => {
-                let map = context
-                    .map(|c| c.map.name.as_str())
-                    .unwrap_or("Unknown");
+                let map = context.map(|c| c.map.name.as_str()).unwrap_or("Unknown");
                 let mode = context
                     .map(|c| mode_display_name(&c.queue))
                     .unwrap_or("Unknown");
@@ -85,9 +81,7 @@ impl DiscordRpc {
                     format!("{} | {} | {}", mode, rank_name, agent_name),
                 )
             }
-            GameState::WaitingForClient => {
-                ("Star Client".to_string(), "Waiting...".to_string())
-            }
+            GameState::WaitingForClient => ("Star Client".to_string(), "Waiting...".to_string()),
         };
 
         let activity = Activity::new()

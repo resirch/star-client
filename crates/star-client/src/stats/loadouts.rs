@@ -41,7 +41,7 @@ pub fn extract_skin(
         if loadout.subject != puuid {
             continue;
         }
-        if let Some(items) = &loadout.items {
+        if let Some(items) = loadout.items() {
             if let Some(item) = items.get(weapon_id) {
                 if let Some(sockets) = &item.sockets {
                     for socket in sockets.values() {

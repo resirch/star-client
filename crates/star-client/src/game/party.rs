@@ -7,10 +7,7 @@ const HISTORY_COUNT: usize = 5;
 
 /// Detects parties by comparing recent match histories.
 /// Players who shared >= 4 of their last 5 matches are likely in the same party.
-pub async fn detect_parties(
-    api: &RiotApiClient,
-    players: &mut [PlayerDisplayData],
-) {
+pub async fn detect_parties(api: &RiotApiClient, players: &mut [PlayerDisplayData]) {
     let mut match_histories: HashMap<String, Vec<String>> = HashMap::new();
 
     // Fetch recent match IDs for each player
@@ -37,9 +34,7 @@ pub async fn detect_parties(
         for j in (i + 1)..puuids.len() {
             let a = &puuids[i];
             let b = &puuids[j];
-            if let (Some(hist_a), Some(hist_b)) =
-                (match_histories.get(a), match_histories.get(b))
-            {
+            if let (Some(hist_a), Some(hist_b)) = (match_histories.get(a), match_histories.get(b)) {
                 let shared: usize = hist_a.iter().filter(|m| hist_b.contains(m)).count();
                 if shared >= PARTY_MATCH_THRESHOLD {
                     let mut found_group = false;

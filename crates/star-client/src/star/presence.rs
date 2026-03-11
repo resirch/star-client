@@ -3,10 +3,7 @@ use crate::riot::types::PlayerDisplayData;
 use std::sync::Arc;
 
 /// Marks players who are also star-client users.
-pub async fn mark_star_users(
-    star_client: &Arc<StarClient>,
-    players: &mut [PlayerDisplayData],
-) {
+pub async fn mark_star_users(star_client: &Arc<StarClient>, players: &mut [PlayerDisplayData]) {
     let puuids: Vec<String> = players.iter().map(|p| p.puuid.clone()).collect();
 
     match star_client.query(&puuids).await {

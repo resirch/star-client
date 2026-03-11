@@ -24,16 +24,13 @@ pub async fn connect_websocket(
     );
 
     let (ws_stream, _) =
-        tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector))
-            .await?;
+        tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector)).await?;
 
     let (mut write, mut read) = ws_stream.split();
 
     // Subscribe to presence and chat events
-    let subscribe_presence =
-        serde_json::json!([5, "OnJsonApiEvent_chat_v4_presences"]).to_string();
-    let subscribe_chat =
-        serde_json::json!([5, "OnJsonApiEvent_chat_v6_messages"]).to_string();
+    let subscribe_presence = serde_json::json!([5, "OnJsonApiEvent_chat_v4_presences"]).to_string();
+    let subscribe_chat = serde_json::json!([5, "OnJsonApiEvent_chat_v6_messages"]).to_string();
 
     write.send(Message::Text(subscribe_presence)).await?;
     write.send(Message::Text(subscribe_chat)).await?;

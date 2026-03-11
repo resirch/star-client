@@ -22,7 +22,10 @@ pub async fn register(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    tracing::info!("Registered user: {}...", &req.puuid[..8.min(req.puuid.len())]);
+    tracing::info!(
+        "Registered user: {}...",
+        &req.puuid[..8.min(req.puuid.len())]
+    );
 
     Ok(Json(RegisterResponse { session_token }))
 }
@@ -63,9 +66,7 @@ pub async fn query(
     Ok(Json(QueryResponse { star_users }))
 }
 
-pub async fn health(
-    State(pool): State<SqlitePool>,
-) -> Json<HealthResponse> {
+pub async fn health(State(pool): State<SqlitePool>) -> Json<HealthResponse> {
     let active = db::count_active_users(&pool).await.unwrap_or(0);
     Json(HealthResponse {
         status: "ok".into(),

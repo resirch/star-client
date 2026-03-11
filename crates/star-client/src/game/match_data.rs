@@ -12,10 +12,7 @@ pub struct MatchContext {
     pub queue: String,
 }
 
-pub async fn fetch_pregame_context(
-    api: &RiotApiClient,
-    match_id: &str,
-) -> Result<MatchContext> {
+pub async fn fetch_pregame_context(api: &RiotApiClient, match_id: &str) -> Result<MatchContext> {
     let pregame = api.get_pregame_match(match_id).await?;
     let map_id = pregame.map_i_d.unwrap_or_default();
 
@@ -26,10 +23,7 @@ pub async fn fetch_pregame_context(
     })
 }
 
-pub async fn fetch_coregame_context(
-    api: &RiotApiClient,
-    match_id: &str,
-) -> Result<MatchContext> {
+pub async fn fetch_coregame_context(api: &RiotApiClient, match_id: &str) -> Result<MatchContext> {
     let coregame = api.get_coregame_match(match_id).await?;
     let map_id = coregame.map_i_d.unwrap_or_default();
 
