@@ -14,7 +14,7 @@ const NAME_W: f32 = 125.0;
 const RANK_W: f32 = 82.0;
 const RANK_W_TRUNCATED: f32 = 56.0;
 const RR_W: f32 = 55.0;
-const PEAK_W: f32 = 82.0;
+const PEAK_W: f32 = 96.0;
 const PREV_W: f32 = 82.0;
 const LB_W: f32 = 56.0;
 const KD_W: f32 = 48.0;
@@ -40,15 +40,13 @@ pub fn render_overlay(
     config: &Config,
 ) {
     let columns = &config.columns;
-    let screen = ctx.screen_rect();
     let show_leaderboard = leaderboard_column_visible(config, players);
     let show_skin = skin_column_visible(columns, game_state);
     let tw = table_width(config, show_leaderboard, show_skin);
-    let x = (screen.width() - tw) / 2.0;
     let y = 60.0;
 
     egui::Area::new(egui::Id::new("star_overlay"))
-        .fixed_pos(Pos2::new(x, y))
+        .anchor(Align2::CENTER_TOP, Vec2::new(0.0, y))
         .order(egui::Order::Foreground)
         .interactable(false)
         .show(ctx, |ui| {
@@ -841,13 +839,19 @@ fn rank_column_width(config: &Config) -> f32 {
 }
 
 fn peak_column_width(config: &Config) -> f32 {
-    let _ = PEAK_W;
-    rank_label_column_width(config)
+    if config.features.truncate_ranks {
+        RANK_W_TRUNCATED
+    } else {
+        PEAK_W
+    }
 }
 
 fn previous_rank_column_width(config: &Config) -> f32 {
-    let _ = PREV_W;
-    rank_label_column_width(config)
+    if config.features.truncate_ranks {
+        RANK_W_TRUNCATED
+    } else {
+        PREV_W
+    }
 }
 
 fn rank_label_column_width(config: &Config) -> f32 {
@@ -1297,7 +1301,7 @@ mod tests {
         config.features.roman_numerals = false;
         assert_eq!(format_rank_name(16, &config), "Platinum 2");
         assert_eq!(rank_column_width(&config), 82.0);
-        assert_eq!(peak_column_width(&config), 82.0);
+        assert_eq!(peak_column_width(&config), 96.0);
         assert_eq!(previous_rank_column_width(&config), 82.0);
         assert_eq!(
             format_rank_parts(16, &config),
