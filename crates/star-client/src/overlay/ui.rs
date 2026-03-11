@@ -31,12 +31,6 @@ const SKIN_UPGRADE_BAR_HEIGHT: f32 = 9.0;
 const SKIN_UPGRADE_BAR_WIDTH: f32 = 1.5;
 const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
 
-#[derive(Clone, Copy)]
-enum CellAlign {
-    Left,
-    Right,
-}
-
 pub fn render_overlay(
     ctx: &egui::Context,
     game_state: &GameState,
@@ -293,7 +287,6 @@ fn player_row(
     let rank_w = rank_column_width(config);
     let peak_w = peak_column_width(config);
     let prev_w = previous_rank_column_width(config);
-    let rank_align = rank_cell_align(config);
     let bg = if is_ally {
         theme::ROW_BG_ALLY
     } else {
@@ -362,10 +355,9 @@ fn player_row(
 
         // Rank (always shown)
         if p.enriched {
-            let text = format_rank_display(p, config);
-            text_cell_aligned(ui, &text, rank_w, &f, rank_color(p.current_rank), rank_align);
+            rank_cell(ui, p.current_rank, config, rank_w, &f, rank_color(p.current_rank));
         } else {
-            text_cell_aligned(ui, &loading, rank_w, &f, theme::TEXT_MUTED, rank_align);
+            text_cell(ui, &loading, rank_w, &f, theme::TEXT_MUTED);
         }
 
         if rr_column_visible(config) {
@@ -383,27 +375,32 @@ fn player_row(
 
         if c.peak_rank {
             if p.enriched {
-                let t = if p.peak_rank > 0 {
-                    format_peak_rank_display(p, config)
+                if p.peak_rank > 0 {
+                    rank_cell(ui, p.peak_rank, config, peak_w, &f, rank_color(p.peak_rank));
                 } else {
-                    "-".to_string()
-                };
-                text_cell_aligned(ui, &t, peak_w, &f, rank_color(p.peak_rank), rank_align);
+                    text_cell(ui, "-", peak_w, &f, rank_color(p.peak_rank));
+                }
             } else {
-                text_cell_aligned(ui, &loading, peak_w, &f, theme::TEXT_MUTED, rank_align);
+                text_cell(ui, &loading, peak_w, &f, theme::TEXT_MUTED);
             }
         }
 
         if c.previous_rank {
             if p.enriched {
-                let t = if p.previous_rank > 0 {
-                    format_rank_name(p.previous_rank, config)
+                if p.previous_rank > 0 {
+                    rank_cell(
+                        ui,
+                        p.previous_rank,
+                        config,
+                        prev_w,
+                        &f,
+                        rank_color(p.previous_rank),
+                    );
                 } else {
-                    "-".to_string()
-                };
-                text_cell_aligned(ui, &t, prev_w, &f, rank_color(p.previous_rank), rank_align);
+                    text_cell(ui, "-", prev_w, &f, rank_color(p.previous_rank));
+                }
             } else {
-                text_cell_aligned(ui, &loading, prev_w, &f, theme::TEXT_MUTED, rank_align);
+                text_cell(ui, &loading, prev_w, &f, theme::TEXT_MUTED);
             }
         }
 
@@ -516,17 +513,6 @@ fn player_row(
 }
 
 fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
-    text_cell_aligned(ui, text, w, font, color, CellAlign::Left);
-}
-
-fn text_cell_aligned(
-    ui: &mut Ui,
-    text: &str,
-    w: f32,
-    font: &egui::FontId,
-    color: egui::Color32,
-    align: CellAlign,
-) {
     let mut job = LayoutJob::default();
     job.append(
         text,
@@ -537,16 +523,10 @@ fn text_cell_aligned(
             ..Default::default()
         },
     );
-    layout_job_cell(ui, job, w, color, align);
+    layout_job_cell(ui, job, w, color);
 }
 
-fn layout_job_cell(
-    ui: &mut Ui,
-    job: LayoutJob,
-    w: f32,
-    fallback_color: egui::Color32,
-    align: CellAlign,
-) {
+fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
     let clip_rect = Rect::from_min_max(
         Pos2::new(rect.left() + CELL_PAD, rect.top()),
@@ -558,14 +538,84 @@ fn layout_job_cell(
     }
 
     let painter = ui.painter().with_clip_rect(clip_rect);
-    let x = match align {
-        CellAlign::Left => clip_rect.left(),
-        CellAlign::Right => (clip_rect.right() - galley.size().x).max(clip_rect.left()),
-    };
     painter.galley(
-        Pos2::new(x, rect.center().y - galley.size().y / 2.0),
+        Pos2::new(clip_rect.left(), rect.center().y - galley.size().y / 2.0),
         galley,
         fallback_color,
+    );
+}
+
+fn rank_cell(
+    ui: &mut Ui,
+    tier: i32,
+    config: &Config,
+    w: f32,
+    font: &egui::FontId,
+    color: egui::Color32,
+) {
+    let (label, suffix) = format_rank_parts(tier, config);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
+    let clip_rect = Rect::from_min_max(
+        Pos2::new(rect.left() + CELL_PAD, rect.top()),
+        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
+    );
+    let painter = ui.painter();
+
+    let mut label_job = LayoutJob::default();
+    label_job.append(
+        &label,
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color,
+            ..Default::default()
+        },
+    );
+    let label_galley = painter.layout_job(label_job);
+    if label_galley.size().x <= 0.0 {
+        return;
+    }
+
+    let Some(suffix) = suffix else {
+        painter.with_clip_rect(clip_rect).galley(
+            Pos2::new(clip_rect.left(), rect.center().y - label_galley.size().y / 2.0),
+            label_galley,
+            color,
+        );
+        return;
+    };
+
+    let mut suffix_job = LayoutJob::default();
+    suffix_job.append(
+        &suffix,
+        0.0,
+        TextFormat {
+            font_id: font.clone(),
+            color,
+            ..Default::default()
+        },
+    );
+    let suffix_galley = painter.layout_job(suffix_job);
+    let suffix_width = suffix_galley.size().x;
+    let suffix_left = (clip_rect.right() - suffix_width).max(clip_rect.left());
+    let left_limit = (suffix_left - 4.0).max(clip_rect.left());
+    let label_clip_rect = Rect::from_min_max(
+        clip_rect.min,
+        Pos2::new(left_limit, clip_rect.bottom()),
+    );
+
+    if label_clip_rect.width() > 0.0 {
+        painter.with_clip_rect(label_clip_rect).galley(
+            Pos2::new(label_clip_rect.left(), rect.center().y - label_galley.size().y / 2.0),
+            label_galley,
+            color,
+        );
+    }
+
+    painter.with_clip_rect(clip_rect).galley(
+        Pos2::new(suffix_left, rect.center().y - suffix_galley.size().y / 2.0),
+        suffix_galley,
+        color,
     );
 }
 
@@ -686,7 +736,7 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
 
     if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
         job.append("-", 0.0, base);
-        layout_job_cell(ui, job, w, theme::TEXT_MUTED, CellAlign::Left);
+        layout_job_cell(ui, job, w, theme::TEXT_MUTED);
         return;
     }
 
@@ -719,7 +769,7 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
             ..Default::default()
         },
     );
-    layout_job_cell(ui, job, w, theme::TEXT_PRIMARY, CellAlign::Left);
+    layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
 }
 
 fn state_color(state: &GameState) -> egui::Color32 {
@@ -762,14 +812,6 @@ fn rank_label_column_width(config: &Config) -> f32 {
     }
 }
 
-fn rank_cell_align(config: &Config) -> CellAlign {
-    if config.features.roman_numerals {
-        CellAlign::Right
-    } else {
-        CellAlign::Left
-    }
-}
-
 fn loading_dots(ctx: &egui::Context) -> String {
     // Keep it ASCII so it renders consistently on the overlay.
     let t = ctx.input(|i| i.time);
@@ -789,16 +831,22 @@ fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
     format_rank_name(player.current_rank, config)
 }
 
-fn format_peak_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
-    format_rank_name(player.peak_rank, config)
-}
-
-fn format_rank_name(tier: i32, config: &Config) -> String {
+fn format_rank_parts(tier: i32, config: &Config) -> (String, Option<String>) {
     if tier <= 0 {
-        return "Unranked".to_string();
+        return ("Unranked".to_string(), None);
     }
 
-    let include_tier = tier != 27;
+    let base = if config.features.truncate_ranks {
+        truncated_rank_name(tier)
+    } else {
+        full_rank_name(tier)
+    }
+    .to_string();
+
+    if tier == 27 {
+        return (base, None);
+    }
+
     let tier_number = ((tier - 3) % 3) + 1;
     let tier_label = if config.features.roman_numerals {
         roman_tier(tier_number)
@@ -806,16 +854,18 @@ fn format_rank_name(tier: i32, config: &Config) -> String {
         tier_number.to_string()
     };
 
-    let base = if config.features.truncate_ranks {
-        truncated_rank_name(tier)
+    if config.features.roman_numerals {
+        (base, Some(tier_label))
     } else {
-        full_rank_name(tier)
-    };
+        (format!("{base} {tier_label}"), None)
+    }
+}
 
-    if include_tier {
-        format!("{base} {tier_label}")
-    } else {
-        base.to_string()
+fn format_rank_name(tier: i32, config: &Config) -> String {
+    let (label, suffix) = format_rank_parts(tier, config);
+    match suffix {
+        Some(suffix) => format!("{label} {suffix}"),
+        None => label,
     }
 }
 
@@ -1082,10 +1132,10 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_last_seen_summary, format_rank_display, format_rank_name, format_server_id,
-        format_skin_name, leaderboard_column_visible, peak_column_width,
-        previous_rank_column_width, rank_cell_align, rank_column_width, rr_column_visible,
-        skin_column_visible, split_players_by_team, CellAlign,
+        format_last_seen_summary, format_rank_display, format_rank_name, format_rank_parts,
+        format_server_id, format_skin_name, leaderboard_column_visible, peak_column_width,
+        previous_rank_column_width, rank_column_width, rr_column_visible, skin_column_visible,
+        split_players_by_team,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1189,7 +1239,10 @@ mod tests {
         assert_eq!(rank_column_width(&config), 98.0);
         assert_eq!(peak_column_width(&config), 64.0);
         assert_eq!(previous_rank_column_width(&config), 64.0);
-        assert!(matches!(rank_cell_align(&config), CellAlign::Right));
+        assert_eq!(
+            format_rank_parts(player.current_rank, &config),
+            ("Imm".to_string(), Some("II".to_string()))
+        );
 
         config.features.truncate_ranks = false;
         config.features.roman_numerals = false;
@@ -1197,7 +1250,10 @@ mod tests {
         assert_eq!(rank_column_width(&config), 116.0);
         assert_eq!(peak_column_width(&config), 82.0);
         assert_eq!(previous_rank_column_width(&config), 82.0);
-        assert!(matches!(rank_cell_align(&config), CellAlign::Left));
+        assert_eq!(
+            format_rank_parts(16, &config),
+            ("Platinum 2".to_string(), None)
+        );
     }
 
     #[test]
