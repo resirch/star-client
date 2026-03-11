@@ -1,6 +1,8 @@
 use egui::{Color32, FontFamily, FontId, Rounding, Stroke, Vec2};
 use std::path::Path;
 
+const REGULAR_FONT_FAMILY: &str = "overlay-regular";
+
 pub const BG_COLOR: Color32 = Color32::from_rgba_premultiplied(15, 15, 20, 220);
 pub const HEADER_BG: Color32 = Color32::from_rgba_premultiplied(25, 25, 35, 240);
 pub const ROW_BG_ALLY: Color32 = Color32::from_rgba_premultiplied(20, 30, 20, 200);
@@ -41,6 +43,10 @@ pub fn small_font() -> FontId {
     FontId::new(10.0, FontFamily::Proportional)
 }
 
+pub fn small_regular_font() -> FontId {
+    FontId::new(10.0, FontFamily::Name(REGULAR_FONT_FAMILY.into()))
+}
+
 pub fn star_font() -> FontId {
     FontId::new(14.0, FontFamily::Proportional)
 }
@@ -48,6 +54,11 @@ pub fn star_font() -> FontId {
 pub fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut loaded_fonts = Vec::new();
+    let default_proportional = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
 
     for source in system_font_fallbacks() {
         let path = Path::new(source.path);
@@ -60,6 +71,27 @@ pub fn configure_fonts(ctx: &egui::Context) {
         fonts.font_data.insert(source.name.into(), font_data);
         loaded_fonts.push(source.name.to_string());
     }
+
+    let regular_family = if loaded_fonts.is_empty() {
+        default_proportional.clone()
+    } else {
+        loaded_fonts
+            .iter()
+            .filter(|name| !name.ends_with("-bold"))
+            .cloned()
+            .chain(
+                loaded_fonts
+                    .iter()
+                    .filter(|name| name.ends_with("-bold"))
+                    .cloned(),
+            )
+            .chain(default_proportional.clone())
+            .collect()
+    };
+    fonts.families.insert(
+        FontFamily::Name(REGULAR_FONT_FAMILY.into()),
+        regular_family,
+    );
 
     if !loaded_fonts.is_empty() {
         if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {

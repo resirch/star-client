@@ -942,7 +942,7 @@ fn last_played_section(ui: &mut Ui, players: &[PlayerDisplayData], local_puuid: 
     ui.add_space(8.0);
     ui.label(
         RichText::new("LAST SEEN")
-            .font(theme::small_font())
+            .font(theme::small_regular_font())
             .color(theme::TEXT_MUTED),
     );
 
@@ -951,7 +951,7 @@ fn last_played_section(ui: &mut Ui, players: &[PlayerDisplayData], local_puuid: 
         let line = format_last_seen_summary(player, my_team);
         ui.label(
             RichText::new(line)
-                .font(theme::small_font())
+                .font(theme::small_regular_font())
                 .color(theme::TEXT_SECONDARY),
         );
     }
