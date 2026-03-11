@@ -387,6 +387,7 @@ impl RiotApiClient {
                                 skin_name: skin.display_name.clone(),
                                 level: index + 1,
                                 total_levels,
+                                color: skin_tier_color(skin.content_tier_uuid.as_deref()),
                             },
                         );
                     }

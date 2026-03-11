@@ -19,24 +19,19 @@ level = true
 [behavior]
 auto_show_pregame = true
 auto_hide_ingame = true
-respect_streamer_mode = true
 party_finder = true
 discord_rpc = true
 
 [features]
 last_played = true
 auto_hide_leaderboard = true
-pre_cls = false
-game_chat = true
 peak_rank_act = true
 aggregate_rank_rr = true
-party_colorblind = true
 server_id = false
 short_ranks = false
 truncate_names = true
 truncate_ranks = true
 roman_numerals = true
-starting_side = false
 
 [star]
 enabled = true

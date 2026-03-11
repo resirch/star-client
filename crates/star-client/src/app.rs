@@ -161,9 +161,22 @@ pub async fn run_data_loop(
                 presence::mark_star_users(&star_client, &mut players_data).await;
             }
 
+            let local_puuid = {
+                let state = app_state.read().await;
+                state.local_puuid.clone()
+            };
             if let Some(history) = &history {
+                for player in &mut players_data {
+                    if player.puuid == local_puuid {
+                        continue;
+                    }
+
+                    player.times_seen_before = history.times_seen(&player.puuid);
+                    player.last_seen_at = history.last_seen(&player.puuid).unwrap_or_default();
+                }
+
                 for p in &players_data {
-                    if !p.game_name.is_empty() {
+                    if p.puuid != local_puuid && !p.game_name.is_empty() {
                         let _ = history.record_encounter(&p.puuid, &p.game_name, &p.tag_line);
                     }
                 }
@@ -193,6 +206,12 @@ pub async fn run_data_loop(
 
             // Phase 2: Enrich each player with rank/KD/HS% and update after each
             let current_season = api_guard.get_current_season_id().await.ok().flatten();
+            let season_lookup = api_guard
+                .get_content()
+                .await
+                .ok()
+                .map(|content| players::build_season_lookup(&content))
+                .unwrap_or_default();
             tracing::debug!(
                 "Phase 2 start: current_season={}",
                 current_season.as_deref().unwrap_or("none")
@@ -220,7 +239,8 @@ pub async fn run_data_loop(
                     player.game_name,
                     player.tag_line
                 );
-                players::enrich_player(&api_guard, &mut player, &current_season).await;
+                players::enrich_player(&api_guard, &mut player, &current_season, &season_lookup)
+                    .await;
 
                 let mut state = app_state.write().await;
                 if i < state.players.len() && state.players[i].puuid == player.puuid {
@@ -268,6 +288,12 @@ pub async fn run_data_loop(
             if !unenriched.is_empty() {
                 tracing::debug!("Re-enriching {} incomplete players", unenriched.len());
                 let current_season = api_guard.get_current_season_id().await.ok().flatten();
+                let season_lookup = api_guard
+                    .get_content()
+                    .await
+                    .ok()
+                    .map(|content| players::build_season_lookup(&content))
+                    .unwrap_or_default();
 
                 for (idx, puuid) in &unenriched {
                     let mut player = {
@@ -278,7 +304,13 @@ pub async fn run_data_loop(
                         state.players[*idx].clone()
                     };
 
-                    players::enrich_player(&api_guard, &mut player, &current_season).await;
+                    players::enrich_player(
+                        &api_guard,
+                        &mut player,
+                        &current_season,
+                        &season_lookup,
+                    )
+                    .await;
 
                     let mut state = app_state.write().await;
                     if *idx < state.players.len() && state.players[*idx].puuid == *puuid {

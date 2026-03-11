@@ -58,8 +58,6 @@ pub struct BehaviorConfig {
     #[serde(default = "bool_true")]
     pub auto_hide_ingame: bool,
     #[serde(default = "bool_true")]
-    pub respect_streamer_mode: bool,
-    #[serde(default = "bool_true")]
     pub party_finder: bool,
     #[serde(default = "bool_true")]
     pub discord_rpc: bool,
@@ -71,16 +69,10 @@ pub struct FeatureConfig {
     pub last_played: bool,
     #[serde(default = "bool_true")]
     pub auto_hide_leaderboard: bool,
-    #[serde(default = "bool_false")]
-    pub pre_cls: bool,
-    #[serde(default = "bool_true")]
-    pub game_chat: bool,
     #[serde(default = "bool_true")]
     pub peak_rank_act: bool,
     #[serde(default = "bool_true")]
     pub aggregate_rank_rr: bool,
-    #[serde(default = "bool_true")]
-    pub party_colorblind: bool,
     #[serde(default = "bool_false")]
     pub server_id: bool,
     #[serde(default = "bool_false")]
@@ -91,8 +83,6 @@ pub struct FeatureConfig {
     pub truncate_ranks: bool,
     #[serde(default = "bool_true")]
     pub roman_numerals: bool,
-    #[serde(default = "bool_false")]
-    pub starting_side: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,7 +152,6 @@ impl Default for BehaviorConfig {
         Self {
             auto_show_pregame: true,
             auto_hide_ingame: true,
-            respect_streamer_mode: true,
             party_finder: true,
             discord_rpc: true,
         }
@@ -174,17 +163,13 @@ impl Default for FeatureConfig {
         Self {
             last_played: true,
             auto_hide_leaderboard: true,
-            pre_cls: false,
-            game_chat: true,
             peak_rank_act: true,
             aggregate_rank_rr: true,
-            party_colorblind: true,
             server_id: false,
             short_ranks: false,
             truncate_names: true,
             truncate_ranks: true,
             roman_numerals: true,
-            starting_side: false,
         }
     }
 }

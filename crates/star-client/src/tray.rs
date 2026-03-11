@@ -116,13 +116,6 @@ impl SystemTray {
         append_toggle(
             &behavior_menu,
             &mut toggle_items,
-            "behavior.respect_streamer_mode",
-            "Respect Streamer Mode",
-            config.behavior.respect_streamer_mode,
-        )?;
-        append_toggle(
-            &behavior_menu,
-            &mut toggle_items,
             "behavior.party_finder",
             "Party Finder",
             config.behavior.party_finder,
@@ -153,20 +146,6 @@ impl SystemTray {
         append_toggle(
             &features_menu,
             &mut toggle_items,
-            "features.pre_cls",
-            "Pre CLS",
-            config.features.pre_cls,
-        )?;
-        append_toggle(
-            &features_menu,
-            &mut toggle_items,
-            "features.game_chat",
-            "Game Chat",
-            config.features.game_chat,
-        )?;
-        append_toggle(
-            &features_menu,
-            &mut toggle_items,
             "features.peak_rank_act",
             "Peak Rank Act",
             config.features.peak_rank_act,
@@ -177,13 +156,6 @@ impl SystemTray {
             "features.aggregate_rank_rr",
             "Aggregate Rank RR",
             config.features.aggregate_rank_rr,
-        )?;
-        append_toggle(
-            &features_menu,
-            &mut toggle_items,
-            "features.party_colorblind",
-            "Party Colorblind",
-            config.features.party_colorblind,
         )?;
         append_toggle(
             &features_menu,
@@ -220,14 +192,6 @@ impl SystemTray {
             "Roman Numerals",
             config.features.roman_numerals,
         )?;
-        append_toggle(
-            &features_menu,
-            &mut toggle_items,
-            "features.starting_side",
-            "Starting Side",
-            config.features.starting_side,
-        )?;
-
         let display_menu = Submenu::new("Display", true);
         append_toggle(
             &display_menu,
@@ -348,9 +312,6 @@ fn toggle_setting(app_state: &Arc<RwLock<AppState>>, id: &str) -> Option<bool> {
             "behavior.auto_hide_ingame" => {
                 toggle!(state.config.behavior.auto_hide_ingame)
             }
-            "behavior.respect_streamer_mode" => {
-                toggle!(state.config.behavior.respect_streamer_mode)
-            }
             "behavior.party_finder" => {
                 toggle!(state.config.behavior.party_finder)
             }
@@ -363,20 +324,11 @@ fn toggle_setting(app_state: &Arc<RwLock<AppState>>, id: &str) -> Option<bool> {
             "features.auto_hide_leaderboard" => {
                 toggle!(state.config.features.auto_hide_leaderboard)
             }
-            "features.pre_cls" => {
-                toggle!(state.config.features.pre_cls)
-            }
-            "features.game_chat" => {
-                toggle!(state.config.features.game_chat)
-            }
             "features.peak_rank_act" => {
                 toggle!(state.config.features.peak_rank_act)
             }
             "features.aggregate_rank_rr" => {
                 toggle!(state.config.features.aggregate_rank_rr)
-            }
-            "features.party_colorblind" => {
-                toggle!(state.config.features.party_colorblind)
             }
             "features.server_id" => {
                 toggle!(state.config.features.server_id)
@@ -392,9 +344,6 @@ fn toggle_setting(app_state: &Arc<RwLock<AppState>>, id: &str) -> Option<bool> {
             }
             "features.roman_numerals" => {
                 toggle!(state.config.features.roman_numerals)
-            }
-            "features.starting_side" => {
-                toggle!(state.config.features.starting_side)
             }
             "overlay.truncate_skins" => {
                 toggle!(state.config.overlay.truncate_skins)

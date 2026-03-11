@@ -1,7 +1,9 @@
 use crate::config::{ColumnConfig, Config};
+use crate::game::match_data::MatchContext;
 use crate::game::state::GameState;
 use crate::overlay::theme;
 use crate::riot::types::{rank_color, PlayerDisplayData};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 
@@ -32,6 +34,7 @@ pub fn render_overlay(
     ctx: &egui::Context,
     game_state: &GameState,
     players: &[PlayerDisplayData],
+    match_context: Option<&MatchContext>,
     local_puuid: &str,
     config: &Config,
 ) {
@@ -41,9 +44,9 @@ pub fn render_overlay(
 
     let columns = &config.columns;
     let screen = ctx.screen_rect();
-    let show_leaderboard = leaderboard_column_visible(columns, players);
+    let show_leaderboard = leaderboard_column_visible(config, players);
     let show_skin = skin_column_visible(columns, game_state);
-    let tw = table_width(columns, show_leaderboard, show_skin);
+    let tw = table_width(config, show_leaderboard, show_skin);
     let x = (screen.width() - tw) / 2.0;
     let y = 60.0;
 
@@ -59,11 +62,12 @@ pub fn render_overlay(
                 .inner_margin(6.0)
                 .show(ui, |ui: &mut Ui| {
                     ui.set_min_width(tw);
-                    title_bar(ui, game_state);
+                    title_bar(ui, game_state, match_context, config);
                     ui.add_space(4.0);
                     header_row(
                         ui,
                         columns,
+                        config,
                         show_leaderboard,
                         show_skin,
                         &selected_weapon_label(&config.overlay.weapon),
@@ -86,6 +90,10 @@ pub fn render_overlay(
                             player_row(ui, p, config, false, show_leaderboard, show_skin);
                         }
                     }
+
+                    if config.features.last_played {
+                        last_played_section(ui, players, local_puuid);
+                    }
                 });
         });
 }
@@ -106,21 +114,30 @@ fn split_players_by_team<'a>(
         .partition(|player| player.team_id == my_team || my_team.is_empty())
 }
 
-fn leaderboard_column_visible(c: &ColumnConfig, players: &[PlayerDisplayData]) -> bool {
-    c.leaderboard && players.iter().any(|p| p.leaderboard_position > 0)
+fn leaderboard_column_visible(config: &Config, players: &[PlayerDisplayData]) -> bool {
+    if !config.columns.leaderboard {
+        return false;
+    }
+
+    if !config.features.auto_hide_leaderboard {
+        return true;
+    }
+
+    players.iter().any(|p| p.leaderboard_position > 0)
 }
 
 fn skin_column_visible(c: &ColumnConfig, state: &GameState) -> bool {
     c.skin && matches!(state, GameState::Ingame { .. })
 }
 
-fn table_width(c: &ColumnConfig, show_leaderboard: bool, show_skin: bool) -> f32 {
-    let mut w = PARTY_W + STAR_W + AGENT_W + NAME_W + RANK_W;
-    if c.rr {
+fn table_width(config: &Config, show_leaderboard: bool, show_skin: bool) -> f32 {
+    let c = &config.columns;
+    let mut w = PARTY_W + STAR_W + AGENT_W + NAME_W + rank_column_width(config);
+    if rr_column_visible(config) {
         w += RR_W;
     }
     if c.peak_rank {
-        w += PEAK_W;
+        w += peak_column_width(config);
     }
     if c.previous_rank {
         w += PREV_W;
@@ -149,7 +166,12 @@ fn table_width(c: &ColumnConfig, show_leaderboard: bool, show_skin: bool) -> f32
     w + 12.0
 }
 
-fn title_bar(ui: &mut Ui, state: &GameState) {
+fn title_bar(
+    ui: &mut Ui,
+    state: &GameState,
+    match_context: Option<&MatchContext>,
+    config: &Config,
+) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("★ STAR CLIENT")
@@ -162,6 +184,18 @@ fn title_bar(ui: &mut Ui, state: &GameState) {
                     .font(theme::small_font())
                     .color(state_color(state)),
             );
+            if config.features.server_id {
+                if let Some(server_id) = match_context
+                    .map(|context| context.server_id.as_str())
+                    .filter(|server_id| !server_id.is_empty())
+                {
+                    ui.label(
+                        RichText::new(format_server_id(server_id))
+                            .font(theme::small_font())
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
+            }
         });
     });
 }
@@ -169,6 +203,7 @@ fn title_bar(ui: &mut Ui, state: &GameState) {
 fn header_row(
     ui: &mut Ui,
     c: &ColumnConfig,
+    config: &Config,
     show_leaderboard: bool,
     show_skin: bool,
     skin_label: &str,
@@ -190,12 +225,12 @@ fn header_row(
         hdr_cell(ui, "", STAR_W, &f, clr);
         hdr_cell(ui, "AGENT", AGENT_W, &f, clr);
         hdr_cell(ui, "NAME", NAME_W, &f, clr);
-        hdr_cell(ui, "RANK", RANK_W, &f, clr);
-        if c.rr {
+        hdr_cell(ui, "RANK", rank_column_width(config), &f, clr);
+        if rr_column_visible(config) {
             hdr_cell(ui, "RR", RR_W, &f, clr);
         }
         if c.peak_rank {
-            hdr_cell(ui, "PEAK", PEAK_W, &f, clr);
+            hdr_cell(ui, "PEAK", peak_column_width(config), &f, clr);
         }
         if c.previous_rank {
             hdr_cell(ui, "PREV", PREV_W, &f, clr);
@@ -257,6 +292,8 @@ fn player_row(
     show_skin: bool,
 ) {
     let c = &config.columns;
+    let rank_w = rank_column_width(config);
+    let peak_w = peak_column_width(config);
     let bg = if is_ally {
         theme::ROW_BG_ALLY
     } else {
@@ -310,16 +347,28 @@ fn player_row(
         } else {
             format!("{}#{}", p.game_name, p.tag_line)
         };
-        text_cell(ui, &name, NAME_W, &f, theme::team_text_color(is_ally));
+        let display_name = if config.features.truncate_names {
+            ellipsize(&name, 18)
+        } else {
+            name
+        };
+        text_cell(
+            ui,
+            &display_name,
+            NAME_W,
+            &f,
+            theme::team_text_color(is_ally),
+        );
 
         // Rank (always shown)
         if p.enriched {
-            text_cell(ui, &p.rank_name, RANK_W, &f, rank_color(p.current_rank));
+            let text = format_rank_display(p, config);
+            text_cell(ui, &text, rank_w, &f, rank_color(p.current_rank));
         } else {
-            text_cell(ui, &loading, RANK_W, &f, theme::TEXT_MUTED);
+            text_cell(ui, &loading, rank_w, &f, theme::TEXT_MUTED);
         }
 
-        if c.rr {
+        if rr_column_visible(config) {
             let t = if p.enriched {
                 if p.current_rank > 0 {
                     format!("{} RR", p.rr)
@@ -335,24 +384,24 @@ fn player_row(
         if c.peak_rank {
             if p.enriched {
                 let t = if p.peak_rank > 0 {
-                    &p.peak_rank_name
+                    format_peak_rank_display(p, config)
                 } else {
-                    "-"
+                    "-".to_string()
                 };
-                text_cell(ui, t, PEAK_W, &f, rank_color(p.peak_rank));
+                text_cell(ui, &t, peak_w, &f, rank_color(p.peak_rank));
             } else {
-                text_cell(ui, &loading, PEAK_W, &f, theme::TEXT_MUTED);
+                text_cell(ui, &loading, peak_w, &f, theme::TEXT_MUTED);
             }
         }
 
         if c.previous_rank {
             if p.enriched {
                 let t = if p.previous_rank > 0 {
-                    &p.previous_rank_name
+                    format_rank_name(p.previous_rank, config)
                 } else {
-                    "-"
+                    "-".to_string()
                 };
-                text_cell(ui, t, PREV_W, &f, rank_color(p.previous_rank));
+                text_cell(ui, &t, PREV_W, &f, rank_color(p.previous_rank));
             } else {
                 text_cell(ui, &loading, PREV_W, &f, theme::TEXT_MUTED);
             }
@@ -453,7 +502,15 @@ fn player_row(
                 &config.overlay.weapon,
                 config.overlay.truncate_skins,
             );
-            skin_cell(ui, &skin_name, p.skin_level, p.skin_level_total, SKIN_W, &f);
+            skin_cell(
+                ui,
+                &skin_name,
+                p.skin_level,
+                p.skin_level_total,
+                p.skin_color,
+                SKIN_W,
+                &f,
+            );
         }
     });
 }
@@ -496,6 +553,7 @@ fn skin_cell(
     skin_name: &str,
     skin_level: usize,
     skin_level_total: usize,
+    skin_color: egui::Color32,
     w: f32,
     font: &egui::FontId,
 ) {
@@ -512,7 +570,7 @@ fn skin_cell(
         0.0,
         TextFormat {
             font_id: font.clone(),
-            color: theme::TEXT_SECONDARY,
+            color: skin_color,
             ..Default::default()
         },
     );
@@ -524,7 +582,7 @@ fn skin_cell(
                 rect.center().y - name_galley.size().y / 2.0,
             ),
             name_galley.clone(),
-            theme::TEXT_SECONDARY,
+            skin_color,
         );
     }
 
@@ -636,6 +694,26 @@ fn state_color(state: &GameState) -> egui::Color32 {
     }
 }
 
+fn rr_column_visible(config: &Config) -> bool {
+    config.columns.rr && !config.features.aggregate_rank_rr
+}
+
+fn rank_column_width(config: &Config) -> f32 {
+    if config.columns.rr && config.features.aggregate_rank_rr {
+        116.0
+    } else {
+        RANK_W
+    }
+}
+
+fn peak_column_width(config: &Config) -> f32 {
+    if config.features.peak_rank_act {
+        112.0
+    } else {
+        PEAK_W
+    }
+}
+
 fn loading_dots(ctx: &egui::Context) -> String {
     // Keep it ASCII so it renders consistently on the overlay.
     let t = ctx.input(|i| i.time);
@@ -649,6 +727,189 @@ fn loading_dots(ctx: &egui::Context) -> String {
 
 fn selected_weapon_label(weapon_name: &str) -> String {
     weapon_name.trim().to_ascii_uppercase()
+}
+
+fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
+    let rank = format_rank_name(player.current_rank, config);
+    if config.columns.rr && config.features.aggregate_rank_rr && player.current_rank > 0 {
+        format!("{rank} ({})", player.rr)
+    } else {
+        rank
+    }
+}
+
+fn format_peak_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
+    let mut text = format_rank_name(player.peak_rank, config);
+    if config.features.peak_rank_act && !player.peak_rank_act.is_empty() {
+        text.push_str(" (");
+        text.push_str(&player.peak_rank_act);
+        text.push(')');
+    }
+    text
+}
+
+fn format_rank_name(tier: i32, config: &Config) -> String {
+    if tier <= 0 {
+        return if config.features.short_ranks {
+            "UnR".to_string()
+        } else {
+            "Unranked".to_string()
+        };
+    }
+
+    let include_tier = tier != 27;
+    let tier_number = ((tier - 3) % 3) + 1;
+    let tier_label = if config.features.roman_numerals {
+        roman_tier(tier_number)
+    } else {
+        tier_number.to_string()
+    };
+
+    let base = if config.features.truncate_ranks {
+        truncated_rank_name(tier)
+    } else if config.features.short_ranks {
+        short_rank_name(tier)
+    } else {
+        full_rank_name(tier)
+    };
+
+    if include_tier {
+        format!("{base} {tier_label}")
+    } else {
+        base.to_string()
+    }
+}
+
+fn truncated_rank_name(tier: i32) -> &'static str {
+    match tier {
+        3..=5 => "Irn",
+        6..=8 => "Brz",
+        9..=11 => "Slv",
+        12..=14 => "Gld",
+        15..=17 => "Plt",
+        18..=20 => "Dia",
+        21..=23 => "Asc",
+        24..=26 => "Imm",
+        27 => "Rad",
+        _ => "Unranked",
+    }
+}
+
+fn short_rank_name(tier: i32) -> &'static str {
+    match tier {
+        3..=5 => "Iron",
+        6..=8 => "Bron",
+        9..=11 => "Silv",
+        12..=14 => "Gold",
+        15..=17 => "Plat",
+        18..=20 => "Dia",
+        21..=23 => "Asc",
+        24..=26 => "Imm",
+        27 => "Rad",
+        _ => "Unranked",
+    }
+}
+
+fn full_rank_name(tier: i32) -> &'static str {
+    match tier {
+        3..=5 => "Iron",
+        6..=8 => "Bronze",
+        9..=11 => "Silver",
+        12..=14 => "Gold",
+        15..=17 => "Platinum",
+        18..=20 => "Diamond",
+        21..=23 => "Ascendant",
+        24..=26 => "Immortal",
+        27 => "Radiant",
+        _ => "Unranked",
+    }
+}
+
+fn roman_tier(tier: i32) -> String {
+    match tier {
+        1 => "I".to_string(),
+        2 => "II".to_string(),
+        3 => "III".to_string(),
+        _ => tier.to_string(),
+    }
+}
+
+fn ellipsize(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars || max_chars <= 3 {
+        return value.to_string();
+    }
+
+    let truncated: String = value.chars().take(max_chars - 3).collect();
+    format!("{truncated}...")
+}
+
+fn format_server_id(server_id: &str) -> String {
+    let mut parts = server_id.split('.');
+    let _ = parts.next();
+    let _ = parts.next();
+    let suffix: Vec<_> = parts.collect();
+    if suffix.is_empty() {
+        server_id.to_string()
+    } else {
+        suffix.join(".")
+    }
+}
+
+fn last_played_section(ui: &mut Ui, players: &[PlayerDisplayData], local_puuid: &str) {
+    let mut seen_before: Vec<_> = players
+        .iter()
+        .filter(|player| player.puuid != local_puuid && player.times_seen_before > 0)
+        .collect();
+    if seen_before.is_empty() {
+        return;
+    }
+
+    seen_before.sort_by(|left, right| right.last_seen_at.cmp(&left.last_seen_at));
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new("SEEN BEFORE")
+            .font(theme::small_font())
+            .color(theme::TEXT_MUTED),
+    );
+
+    for player in seen_before {
+        let age = format_history_age(&player.last_seen_at).unwrap_or_else(|| "previously".into());
+        let times = if player.times_seen_before == 1 {
+            "1 time".to_string()
+        } else {
+            format!("{} times", player.times_seen_before)
+        };
+        let name = if player.tag_line.is_empty() {
+            player.game_name.clone()
+        } else {
+            format!("{}#{}", player.game_name, player.tag_line)
+        };
+        let line = format!("{name} - last seen {age} ago ({times})");
+        ui.label(
+            RichText::new(line)
+                .font(theme::small_font())
+                .color(theme::TEXT_SECONDARY),
+        );
+    }
+}
+
+fn format_history_age(last_seen_at: &str) -> Option<String> {
+    let parsed = NaiveDateTime::parse_from_str(last_seen_at, "%Y-%m-%d %H:%M:%S").ok()?;
+    let parsed = DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc);
+    let age = Utc::now().signed_duration_since(parsed);
+    let seconds = age.num_seconds().max(0);
+
+    if seconds < 60 {
+        Some(format!("{seconds}s"))
+    } else if seconds < 3_600 {
+        Some(format!("{}m", seconds / 60))
+    } else if seconds < 86_400 {
+        Some(format!("{}h", seconds / 3_600))
+    } else {
+        Some(format!("{}d", seconds / 86_400))
+    }
 }
 
 fn format_skin_name(raw_skin_name: &str, weapon_name: &str, truncate_skins: bool) -> String {
@@ -726,8 +987,11 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_skin_name, skin_column_visible, split_players_by_team};
-    use crate::config::ColumnConfig;
+    use super::{
+        format_rank_display, format_rank_name, format_server_id, format_skin_name,
+        leaderboard_column_visible, skin_column_visible, split_players_by_team,
+    };
+    use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
     use crate::riot::types::PlayerDisplayData;
 
@@ -784,7 +1048,10 @@ mod tests {
             format_skin_name("Standard", "Vandal", false),
             "Standard Vandal"
         );
-        assert_eq!(format_skin_name("Vandal", "Vandal", false), "Standard Vandal");
+        assert_eq!(
+            format_skin_name("Vandal", "Vandal", false),
+            "Standard Vandal"
+        );
     }
 
     #[test]
@@ -806,5 +1073,51 @@ mod tests {
                 match_id: "coregame".into(),
             }
         ));
+    }
+
+    #[test]
+    fn formats_rank_display_from_feature_flags() {
+        let mut config = Config::default();
+        config.columns.rr = true;
+        config.features.aggregate_rank_rr = true;
+        config.features.truncate_ranks = true;
+        config.features.roman_numerals = true;
+
+        let player = PlayerDisplayData {
+            current_rank: 25,
+            rr: 87,
+            ..Default::default()
+        };
+
+        assert_eq!(format_rank_display(&player, &config), "Imm II (87)");
+
+        config.features.aggregate_rank_rr = false;
+        config.features.truncate_ranks = false;
+        config.features.short_ranks = true;
+        config.features.roman_numerals = false;
+        assert_eq!(format_rank_name(16, &config), "Plat 2");
+    }
+
+    #[test]
+    fn auto_hide_leaderboard_only_hides_when_enabled() {
+        let mut config = Config::default();
+        config.columns.leaderboard = true;
+        config.features.auto_hide_leaderboard = true;
+        assert!(!leaderboard_column_visible(
+            &config,
+            &[PlayerDisplayData::default()]
+        ));
+
+        config.features.auto_hide_leaderboard = false;
+        assert!(leaderboard_column_visible(
+            &config,
+            &[PlayerDisplayData::default()]
+        ));
+    }
+
+    #[test]
+    fn shortens_server_id_like_vry() {
+        assert_eq!(format_server_id("aresriot.aws.ap.ne1"), "ap.ne1");
+        assert_eq!(format_server_id("na"), "na");
     }
 }

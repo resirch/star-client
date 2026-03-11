@@ -234,6 +234,8 @@ pub struct PregameMatchResponse {
     pub mode: Option<String>,
     pub queue_i_d: Option<String>,
     pub provisioning_flow_i_d: Option<String>,
+    #[serde(rename = "GamePodID")]
+    pub game_pod_id: Option<String>,
     pub ally_team: Option<PregameTeam>,
 }
 
@@ -271,6 +273,8 @@ pub struct CoregameMatchResponse {
     pub mode_i_d: Option<String>,
     pub queue_i_d: Option<String>,
     pub provisioning_flow: Option<String>,
+    #[serde(rename = "GamePodID")]
+    pub game_pod_id: Option<String>,
     pub players: Vec<CoregamePlayer>,
 }
 
@@ -426,6 +430,7 @@ pub struct WeaponSkinData {
     pub uuid: String,
     pub display_name: String,
     pub display_icon: Option<String>,
+    pub content_tier_uuid: Option<String>,
     #[serde(default)]
     pub levels: Vec<WeaponSkinLevelData>,
 }
@@ -444,6 +449,7 @@ pub struct SkinLevelInfo {
     pub skin_name: String,
     pub level: usize,
     pub total_levels: usize,
+    pub color: egui::Color32,
 }
 
 // --- Aggregated player data for overlay display ---
@@ -461,6 +467,7 @@ pub struct PlayerDisplayData {
     pub rr: i32,
     pub peak_rank: i32,
     pub peak_rank_name: String,
+    pub peak_rank_act: String,
     pub previous_rank: i32,
     pub previous_rank_name: String,
     pub leaderboard_position: i32,
@@ -476,10 +483,14 @@ pub struct PlayerDisplayData {
     pub skin_name: String,
     pub skin_level: usize,
     pub skin_level_total: usize,
+    #[serde(skip)]
+    pub skin_color: egui::Color32,
     pub party_id: String,
     pub party_number: i32,
     pub is_incognito: bool,
     pub is_star_user: bool,
+    pub times_seen_before: i32,
+    pub last_seen_at: String,
     #[serde(skip)]
     pub enriched: bool,
 }
@@ -534,9 +545,30 @@ pub fn rank_color(tier: i32) -> egui::Color32 {
     }
 }
 
+pub fn skin_tier_color(content_tier_uuid: Option<&str>) -> egui::Color32 {
+    match content_tier_uuid.map(|value| value.to_ascii_lowercase()) {
+        Some(uuid) if uuid == "0cebb8be-46d7-c12a-d306-e9907bfc5a25" => {
+            egui::Color32::from_rgb(0, 149, 135)
+        }
+        Some(uuid) if uuid == "e046854e-406c-37f4-6607-19a9ba8426fc" => {
+            egui::Color32::from_rgb(241, 184, 45)
+        }
+        Some(uuid) if uuid == "60bca009-4182-7998-dee7-b8a2558dc369" => {
+            egui::Color32::from_rgb(209, 84, 141)
+        }
+        Some(uuid) if uuid == "12683d76-48d7-84a3-4e09-6985794f0445" => {
+            egui::Color32::from_rgb(90, 159, 226)
+        }
+        Some(uuid) if uuid == "411e4a55-4e59-7757-41f0-86a53f101bb5" => {
+            egui::Color32::from_rgb(239, 235, 101)
+        }
+        _ => egui::Color32::from_rgb(160, 160, 175),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::LoadoutsResponse;
+    use super::{skin_tier_color, LoadoutsResponse};
 
     #[test]
     fn loadouts_deserialize_nested_game_shape() {
@@ -597,5 +629,21 @@ mod tests {
         let items = parsed.loadouts[0].items().unwrap();
 
         assert!(items.contains_key("weapon-1"));
+    }
+
+    #[test]
+    fn maps_vry_skin_tiers_to_colors() {
+        assert_eq!(
+            skin_tier_color(Some("0cebb8be-46d7-c12a-d306-e9907bfc5a25")),
+            egui::Color32::from_rgb(0, 149, 135)
+        );
+        assert_eq!(
+            skin_tier_color(Some("411e4a55-4e59-7757-41f0-86a53f101bb5")),
+            egui::Color32::from_rgb(239, 235, 101)
+        );
+        assert_eq!(
+            skin_tier_color(None),
+            egui::Color32::from_rgb(160, 160, 175)
+        );
     }
 }

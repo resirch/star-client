@@ -209,6 +209,7 @@ fn run_overlay(
                         egui_context,
                         &state.game_state,
                         &state.players,
+                        state.match_context.as_ref(),
                         &state.local_puuid,
                         &state.config,
                     );

@@ -54,4 +54,4 @@ Star Client is compliant with Riot Games' third-party application policy:
 - Does not inject code into the game process
 - Uses only official local APIs (lockfile, entitlements) and public PD/GLZ endpoints
 - Overlay is a separate transparent window, not hooked into the game renderer
-- Respects streamer mode / incognito flags
+- Respects Riot incognito / hidden-identity flags

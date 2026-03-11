@@ -9,6 +9,37 @@ struct EquippedSkin {
     name: String,
     level: usize,
     total_levels: usize,
+    color: egui::Color32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SeasonLookup {
+    act_order: Vec<String>,
+    act_labels: HashMap<String, String>,
+}
+
+pub fn build_season_lookup(content: &ContentResponse) -> SeasonLookup {
+    let mut lookup = SeasonLookup::default();
+
+    if let Some(seasons) = &content.seasons {
+        for season in seasons {
+            if season.season_type.as_deref() != Some("act") {
+                continue;
+            }
+
+            let Some(season_id) = season.i_d.clone() else {
+                continue;
+            };
+
+            lookup.act_order.push(season_id.clone());
+
+            if let Some(name) = season.name.as_deref().and_then(compact_act_label) {
+                lookup.act_labels.insert(season_id, name);
+            }
+        }
+    }
+
+    lookup
 }
 
 pub async fn fetch_pregame_players(
@@ -107,6 +138,7 @@ pub async fn fetch_coregame_players(
             display.skin_name = skin.name;
             display.skin_level = skin.level;
             display.skin_level_total = skin.total_levels;
+            display.skin_color = skin.color;
         }
 
         players.push(display);
@@ -141,6 +173,7 @@ pub async fn enrich_player(
     api: &RiotApiClient,
     player: &mut PlayerDisplayData,
     current_season: &Option<String>,
+    season_lookup: &SeasonLookup,
 ) {
     let puuid = player.puuid.clone();
     let short_id = &puuid[..8.min(puuid.len())];
@@ -158,7 +191,7 @@ pub async fn enrich_player(
             if mmr.queue_skills.is_none() && has_data {
                 tracing::debug!("MMR response has no queue_skills for {}", short_id);
             }
-            extract_rank_data(player, &mmr, current_season);
+            extract_rank_data(player, &mmr, current_season, season_lookup);
             has_data
         }
         Err(e) => {
@@ -190,10 +223,13 @@ fn extract_rank_data(
     display: &mut PlayerDisplayData,
     mmr: &MmrResponse,
     current_season: &Option<String>,
+    season_lookup: &SeasonLookup,
 ) {
     if let Some(skills) = &mmr.queue_skills {
         if let Some(comp) = skills.get("competitive") {
             if let Some(seasonal) = &comp.seasonal_info_by_season_i_d {
+                let season_ids = ordered_season_ids(seasonal, season_lookup);
+
                 // Current season rank
                 if let Some(season_id) = current_season {
                     if let Some(info) = seasonal.get(season_id) {
@@ -211,30 +247,37 @@ fn extract_rank_data(
 
                 // Peak rank across all seasons
                 let mut peak_tier = 0i32;
+                let mut peak_season_id: Option<&str> = None;
                 let mut prev_tier = 0i32;
-                let season_ids: Vec<&String> = seasonal.keys().collect();
 
-                for (_sid, info) in seasonal.iter() {
+                for season_id in &season_ids {
+                    let Some(info) = seasonal.get(season_id) else {
+                        continue;
+                    };
+
+                    let mut season_peak = info.competitive_tier.unwrap_or(0);
                     if let Some(wins_by_tier) = &info.wins_by_tier {
                         for (tier_str, _) in wins_by_tier {
                             if let Ok(tier) = tier_str.parse::<i32>() {
-                                if tier > peak_tier {
-                                    peak_tier = tier;
-                                }
+                                season_peak = season_peak.max(tier);
                             }
                         }
                     }
-                    let tier = info.competitive_tier.unwrap_or(0);
-                    if tier > peak_tier {
-                        peak_tier = tier;
+
+                    if season_peak >= peak_tier {
+                        peak_tier = season_peak;
+                        peak_season_id = Some(season_id.as_str());
                     }
                 }
 
                 // Previous season: find the most recent non-current season
                 if let Some(current_sid) = current_season {
-                    for sid in season_ids.iter().rev() {
-                        if *sid != current_sid {
-                            if let Some(info) = seasonal.get(*sid) {
+                    if let Some(current_index) = season_ids
+                        .iter()
+                        .position(|season_id| season_id == current_sid)
+                    {
+                        for sid in season_ids[..current_index].iter().rev() {
+                            if let Some(info) = seasonal.get(sid) {
                                 prev_tier = info.competitive_tier.unwrap_or(0);
                                 if prev_tier > 0 {
                                     break;
@@ -246,6 +289,10 @@ fn extract_rank_data(
 
                 display.peak_rank = peak_tier;
                 display.peak_rank_name = rank_name(peak_tier).to_string();
+                display.peak_rank_act = peak_season_id
+                    .and_then(|season_id| season_lookup.act_labels.get(season_id))
+                    .cloned()
+                    .unwrap_or_default();
                 display.previous_rank = prev_tier;
                 display.previous_rank_name = rank_name(prev_tier).to_string();
             }
@@ -255,6 +302,60 @@ fn extract_rank_data(
     if display.rank_name.is_empty() {
         display.rank_name = rank_name(display.current_rank).to_string();
     }
+}
+
+fn ordered_season_ids(
+    seasonal: &HashMap<String, SeasonalInfo>,
+    season_lookup: &SeasonLookup,
+) -> Vec<String> {
+    let mut season_ids = Vec::new();
+
+    for season_id in &season_lookup.act_order {
+        if seasonal.contains_key(season_id) {
+            season_ids.push(season_id.clone());
+        }
+    }
+
+    let mut remainder: Vec<String> = seasonal
+        .keys()
+        .filter(|season_id| !season_lookup.act_order.contains(*season_id))
+        .cloned()
+        .collect();
+    remainder.sort();
+    season_ids.extend(remainder);
+    season_ids
+}
+
+fn compact_act_label(name: &str) -> Option<String> {
+    let numbers = extract_numbers(name);
+    if numbers.len() >= 2 {
+        return Some(format!("E{}A{}", numbers[0], numbers[1]));
+    }
+
+    if name.to_ascii_lowercase().contains("act") {
+        return numbers.first().map(|act| format!("A{act}"));
+    }
+
+    None
+}
+
+fn extract_numbers(value: &str) -> Vec<String> {
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            numbers.push(std::mem::take(&mut current));
+        }
+    }
+
+    if !current.is_empty() {
+        numbers.push(current);
+    }
+
+    numbers
 }
 
 fn extract_earned_rr(display: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
@@ -361,6 +462,7 @@ fn extract_weapon_skin(
                                     name: skin.skin_name.clone(),
                                     level: skin.level,
                                     total_levels: skin.total_levels,
+                                    color: skin.color,
                                 };
                             }
 
@@ -368,6 +470,7 @@ fn extract_weapon_skin(
                             if name != "Unknown" {
                                 return EquippedSkin {
                                     name,
+                                    color: skin_tier_color(None),
                                     ..Default::default()
                                 };
                             }
@@ -380,6 +483,7 @@ fn extract_weapon_skin(
 
     EquippedSkin {
         name: standard_skin_name(weapon_name),
+        color: skin_tier_color(None),
         ..Default::default()
     }
 }
@@ -390,5 +494,107 @@ fn standard_skin_name(weapon_name: &str) -> String {
         "Standard".to_string()
     } else {
         format!("Standard {weapon_name}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_season_lookup, compact_act_label, extract_rank_data, SeasonLookup};
+    use crate::riot::types::{
+        ContentResponse, ContentSeason, MmrResponse, PlayerDisplayData, QueueSkill, SeasonalInfo,
+    };
+    use std::collections::HashMap;
+
+    #[test]
+    fn compacts_act_labels_like_vry() {
+        assert_eq!(
+            compact_act_label("Episode 9 Act 2").as_deref(),
+            Some("E9A2")
+        );
+        assert_eq!(compact_act_label("Act 3").as_deref(), Some("A3"));
+        assert_eq!(compact_act_label("Something Else"), None);
+    }
+
+    #[test]
+    fn extracts_peak_rank_act_from_content_order() {
+        let mut seasonal = HashMap::new();
+        seasonal.insert(
+            "act-1".to_string(),
+            SeasonalInfo {
+                competitive_tier: Some(17),
+                ..Default::default()
+            },
+        );
+        seasonal.insert(
+            "act-2".to_string(),
+            SeasonalInfo {
+                competitive_tier: Some(20),
+                ..Default::default()
+            },
+        );
+
+        let mmr = MmrResponse {
+            queue_skills: Some(HashMap::from([(
+                "competitive".to_string(),
+                QueueSkill {
+                    seasonal_info_by_season_i_d: Some(seasonal),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+
+        let lookup = build_season_lookup(&ContentResponse {
+            seasons: Some(vec![
+                ContentSeason {
+                    i_d: Some("act-1".to_string()),
+                    name: Some("Episode 8 Act 3".to_string()),
+                    is_active: Some(false),
+                    season_type: Some("act".to_string()),
+                },
+                ContentSeason {
+                    i_d: Some("act-2".to_string()),
+                    name: Some("Episode 9 Act 1".to_string()),
+                    is_active: Some(true),
+                    season_type: Some("act".to_string()),
+                },
+            ]),
+        });
+
+        let mut player = PlayerDisplayData::default();
+        extract_rank_data(&mut player, &mmr, &Some("act-2".to_string()), &lookup);
+
+        assert_eq!(player.peak_rank, 20);
+        assert_eq!(player.peak_rank_act, "E9A1");
+    }
+
+    #[test]
+    fn falls_back_when_no_content_lookup_exists() {
+        let lookup = SeasonLookup::default();
+        let mut seasonal = HashMap::new();
+        seasonal.insert(
+            "zzz".to_string(),
+            SeasonalInfo {
+                competitive_tier: Some(12),
+                ..Default::default()
+            },
+        );
+
+        let mmr = MmrResponse {
+            queue_skills: Some(HashMap::from([(
+                "competitive".to_string(),
+                QueueSkill {
+                    seasonal_info_by_season_i_d: Some(seasonal),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+
+        let mut player = PlayerDisplayData::default();
+        extract_rank_data(&mut player, &mmr, &None, &lookup);
+
+        assert_eq!(player.peak_rank, 12);
+        assert!(player.peak_rank_act.is_empty());
     }
 }
