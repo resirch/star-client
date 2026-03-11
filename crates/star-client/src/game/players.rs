@@ -209,7 +209,7 @@ pub async fn enrich_player(
 
     let comp_ok = match api.get_competitive_updates(&puuid).await {
         Ok(updates) => {
-            extract_recent_results(player, &updates);
+            extract_recent_results(player, api, &updates).await;
             extract_performance_from_updates(player, api, &updates).await;
             true
         }
@@ -347,7 +347,11 @@ fn previous_rank_tier(
     0
 }
 
-fn extract_recent_results(display: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
+async fn extract_recent_results(
+    display: &mut PlayerDisplayData,
+    api: &RiotApiClient,
+    updates: &CompetitiveUpdatesResponse,
+) {
     let short_id = &display.puuid[..8.min(display.puuid.len())];
     tracing::debug!(
         "Competitive updates for {}: {} matches",
@@ -355,12 +359,33 @@ fn extract_recent_results(display: &mut PlayerDisplayData, updates: &Competitive
         updates.matches.len()
     );
 
-    display.recent_results = updates
-        .matches
-        .iter()
-        .take(5)
-        .filter_map(competitive_update_result)
-        .collect();
+    let mut recent_results = String::new();
+
+    for update in updates.matches.iter().take(5) {
+        let result = if let Some(match_id) = update.match_i_d.as_deref() {
+            match api.get_match_details(match_id).await {
+                Ok(details) => competitive_match_result(&display.puuid, &details)
+                    .or_else(|| competitive_update_result(update)),
+                Err(error) => {
+                    tracing::debug!(
+                        "Match details unavailable for {} match {}: {}",
+                        short_id,
+                        match_id,
+                        error
+                    );
+                    competitive_update_result(update)
+                }
+            }
+        } else {
+            competitive_update_result(update)
+        };
+
+        if let Some(result) = result {
+            recent_results.push(result);
+        }
+    }
+
+    display.recent_results = recent_results;
 
     let recent_results = if display.recent_results.is_empty() {
         "-"
@@ -373,6 +398,22 @@ fn extract_recent_results(display: &mut PlayerDisplayData, updates: &Competitive
         short_id,
         recent_results
     );
+}
+
+fn competitive_match_result(puuid: &str, details: &MatchDetailsResponse) -> Option<char> {
+    let team_id = details
+        .players
+        .iter()
+        .find(|player| player.subject == puuid)?
+        .team_id
+        .as_deref()?;
+    let team = details
+        .teams
+        .as_ref()?
+        .iter()
+        .find(|team| team.team_id.eq_ignore_ascii_case(team_id))?;
+
+    Some(if team.won { 'W' } else { 'L' })
 }
 
 fn competitive_update_result(update: &CompetitiveUpdate) -> Option<char> {
@@ -398,6 +439,15 @@ fn compare_update_progress(update: &CompetitiveUpdate) -> Option<char> {
 
 fn compare_optional_i32(after: Option<i32>, before: Option<i32>) -> Option<std::cmp::Ordering> {
     Some(after?.cmp(&before?))
+}
+
+fn fallback_recent_results(updates: &CompetitiveUpdatesResponse) -> String {
+    updates
+        .matches
+        .iter()
+        .take(5)
+        .filter_map(competitive_update_result)
+        .collect()
 }
 
 async fn extract_performance_from_updates(
@@ -533,12 +583,13 @@ fn standard_skin_name(weapon_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_season_lookup, competitive_update_result, extract_rank_data, extract_recent_results,
-        normalize_overlay_weapon, SeasonLookup,
+        build_season_lookup, competitive_match_result, competitive_update_result,
+        extract_rank_data, fallback_recent_results, normalize_overlay_weapon, SeasonLookup,
     };
     use crate::riot::types::{
-        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason, MmrResponse,
-        PlayerDisplayData, QueueSkill, SeasonalInfo,
+        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason,
+        MatchDetailsResponse, MatchInfo, MatchPlayer, MatchTeam, MmrResponse, PlayerDisplayData,
+        QueueSkill, SeasonalInfo,
     };
     use std::collections::HashMap;
 
@@ -685,7 +736,6 @@ mod tests {
 
     #[test]
     fn builds_recent_results_from_latest_five_updates() {
-        let mut player = PlayerDisplayData::default();
         let updates = CompetitiveUpdatesResponse {
             matches: vec![
                 CompetitiveUpdate {
@@ -716,9 +766,7 @@ mod tests {
             subject: None,
         };
 
-        extract_recent_results(&mut player, &updates);
-
-        assert_eq!(player.recent_results, "WWLLW");
+        assert_eq!(fallback_recent_results(&updates), "WWLLW");
     }
 
     #[test]
@@ -731,5 +779,45 @@ mod tests {
         };
 
         assert_eq!(competitive_update_result(&update), Some('W'));
+    }
+
+    #[test]
+    fn derives_match_result_from_match_details() {
+        let details = MatchDetailsResponse {
+            match_info: MatchInfo {
+                match_id: "match-1".to_string(),
+                map_id: "map-1".to_string(),
+                game_mode: Some("competitive".to_string()),
+                queue_id: Some("competitive".to_string()),
+                season_id: Some("season-1".to_string()),
+            },
+            players: vec![MatchPlayer {
+                subject: "player-1".to_string(),
+                team_id: Some("Blue".to_string()),
+                character_id: None,
+                stats: None,
+                competitive_tier: None,
+                player_card: None,
+                player_title: None,
+                party_id: None,
+            }],
+            teams: Some(vec![
+                MatchTeam {
+                    team_id: "Blue".to_string(),
+                    won: true,
+                    rounds_played: Some(24),
+                    rounds_won: Some(13),
+                },
+                MatchTeam {
+                    team_id: "Red".to_string(),
+                    won: false,
+                    rounds_played: Some(24),
+                    rounds_won: Some(11),
+                },
+            ]),
+            round_results: None,
+        };
+
+        assert_eq!(competitive_match_result("player-1", &details), Some('W'));
     }
 }

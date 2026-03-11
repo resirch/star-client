@@ -58,15 +58,25 @@ pub fn configure_fonts(ctx: &egui::Context) {
         let mut font_data = egui::FontData::from_owned(bytes);
         font_data.index = source.index;
         fonts.font_data.insert(source.name.into(), font_data);
-        loaded_fonts.push(source.name);
+        loaded_fonts.push(source.name.to_string());
     }
 
     if !loaded_fonts.is_empty() {
         if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
-            family.extend(loaded_fonts.iter().map(|name| (*name).into()));
+            let existing = family.clone();
+            *family = loaded_fonts
+                .iter()
+                .cloned()
+                .chain(existing)
+                .collect();
         }
         if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
-            family.extend(loaded_fonts.iter().map(|name| (*name).into()));
+            let existing = family.clone();
+            *family = loaded_fonts
+                .iter()
+                .cloned()
+                .chain(existing)
+                .collect();
         }
 
         tracing::info!(
@@ -91,6 +101,11 @@ struct SystemFontSource {
 #[cfg(target_os = "windows")]
 fn system_font_fallbacks() -> &'static [SystemFontSource] {
     &[
+        SystemFontSource {
+            name: "system-segoe-ui-bold",
+            path: r"C:\Windows\Fonts\segoeuib.ttf",
+            index: 0,
+        },
         SystemFontSource {
             name: "system-segoe-ui",
             path: r"C:\Windows\Fonts\segoeui.ttf",
