@@ -837,12 +837,7 @@ fn rr_column_visible(config: &Config) -> bool {
 }
 
 fn rank_column_width(config: &Config) -> f32 {
-    let base_width = rank_label_column_width(config);
-    if config.columns.rr {
-        base_width + 34.0
-    } else {
-        base_width
-    }
+    rank_label_column_width(config)
 }
 
 fn peak_column_width(config: &Config) -> f32 {
@@ -1290,7 +1285,7 @@ mod tests {
 
         assert_eq!(format_rank_display(&player, &config), "IMM II");
         assert!(rr_column_visible(&config));
-        assert_eq!(rank_column_width(&config), 90.0);
+        assert_eq!(rank_column_width(&config), 56.0);
         assert_eq!(peak_column_width(&config), 56.0);
         assert_eq!(previous_rank_column_width(&config), 56.0);
         assert_eq!(
@@ -1301,7 +1296,7 @@ mod tests {
         config.features.truncate_ranks = false;
         config.features.roman_numerals = false;
         assert_eq!(format_rank_name(16, &config), "Platinum 2");
-        assert_eq!(rank_column_width(&config), 116.0);
+        assert_eq!(rank_column_width(&config), 82.0);
         assert_eq!(peak_column_width(&config), 82.0);
         assert_eq!(previous_rank_column_width(&config), 82.0);
         assert_eq!(
