@@ -968,11 +968,7 @@ fn local_team_id<'a>(players: &'a [PlayerDisplayData], local_puuid: &str) -> &'a
 
 fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String {
     let previous_name = display_full_name(&player.last_seen_game_name, &player.last_seen_tag_line);
-    let current_name = if player.is_incognito {
-        None
-    } else {
-        display_full_name(&player.game_name, &player.tag_line)
-    };
+    let current_name = display_full_name(&player.game_name, &player.tag_line);
     let relation = team_relation_label(player, my_team);
     let agent = if player.agent_name.is_empty() {
         "unknown agent".to_string()
@@ -981,38 +977,37 @@ fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String
     };
 
     let identity = if player.is_incognito {
-        match previous_name {
-            Some(previous_name) => format!("Ran into them as {previous_name}"),
-            None => "Hidden now".to_string(),
-        }
+        format!("{agent} on {relation}")
     } else {
-        match (previous_name, current_name) {
-            (Some(previous_name), Some(current_name)) if previous_name != current_name => {
-                format!("{previous_name} is now {current_name}")
-            }
-            (_, Some(current_name)) => current_name,
-            (Some(previous_name), None) => previous_name,
+        match (&current_name, &previous_name) {
+            (Some(current_name), _) => current_name.clone(),
+            (None, Some(previous_name)) => previous_name.clone(),
             (None, None) => "Unknown player".to_string(),
         }
     };
 
-    let current_state = if player.is_incognito {
-        format!("Hidden now on {relation} as {agent}")
-    } else {
-        format!("On {relation} as {agent}")
+    let previous_identity = match (&previous_name, &current_name) {
+        (Some(previous_name), Some(current_name)) if previous_name != current_name => {
+            Some(previous_name.clone())
+        }
+        _ => None,
     };
 
     let age = format_history_age(&player.last_seen_at)
-        .map(|age| format!("Last seen {age} ago"))
-        .unwrap_or_else(|| "Last seen previously".to_string());
+        .map(|age| format!(" {age}"))
+        .unwrap_or_else(|| " previously".to_string());
     let times_seen = player.times_seen_before.saturating_add(1);
     let seen_count = if times_seen == 1 {
-        "Seen 1 time".to_string()
+        "(1 time)".to_string()
     } else {
-        format!("Seen {times_seen} times")
+        format!("({times_seen} times)")
     };
 
-    format!("{identity}. {current_state}. {age}. {seen_count}.")
+    if let Some(previous_identity) = previous_identity {
+        format!("Last seen {identity} (previously {previous_identity}){age} {seen_count}")
+    } else {
+        format!("Last seen {identity}{age} {seen_count}")
+    }
 }
 
 fn format_history_age(last_seen_at: &str) -> Option<String> {
@@ -1022,13 +1017,13 @@ fn format_history_age(last_seen_at: &str) -> Option<String> {
     let seconds = age.num_seconds().max(0);
 
     if seconds < 60 {
-        Some(format!("{seconds}s"))
+        Some(format!("{seconds} sec ago"))
     } else if seconds < 3_600 {
-        Some(format!("{}m", seconds / 60))
+        Some(format!("{} min ago", seconds / 60))
     } else if seconds < 86_400 {
-        Some(format!("{}h", seconds / 3_600))
+        Some(format!("{} hr ago", seconds / 3_600))
     } else {
-        Some(format!("{}d", seconds / 86_400))
+        Some(format!("{} days ago", seconds / 86_400))
     }
 }
 
@@ -1295,15 +1290,14 @@ mod tests {
 
         let summary = format_last_seen_summary(&player, "Blue");
 
-        assert!(summary.contains("Ran into them as Example#TAG"));
-        assert!(summary.contains("Hidden now on enemy team as Jett"));
-        assert!(summary.contains("Seen 3 times"));
+        assert!(summary.contains("Last seen Jett on enemy team (previously Example#TAG)"));
+        assert!(summary.contains("(3 times)"));
         assert!(!summary.contains("HiddenCurrent#NOW"));
         assert!(!summary.contains("HiddenCurrent"));
     }
 
     #[test]
-    fn last_seen_visible_player_shows_rename_and_context() {
+    fn last_seen_visible_player_shows_rename() {
         let player = PlayerDisplayData {
             game_name: "Current".into(),
             tag_line: "NOW".into(),
@@ -1318,8 +1312,30 @@ mod tests {
 
         let summary = format_last_seen_summary(&player, "Blue");
 
-        assert!(summary.contains("Example#TAG is now Current#NOW"));
-        assert!(summary.contains("On your team as Sova"));
-        assert!(summary.contains("Seen 2 times"));
+        assert!(summary.contains("Last seen Current#NOW (previously Example#TAG)"));
+        assert!(summary.contains("(2 times)"));
+        assert!(!summary.contains("your team"));
+    }
+
+    #[test]
+    fn last_seen_hidden_player_without_rename_uses_current_team_context_only() {
+        let player = PlayerDisplayData {
+            game_name: "Example".into(),
+            tag_line: "TAG".into(),
+            team_id: "Blue".into(),
+            agent_name: "Jett".into(),
+            is_incognito: true,
+            last_seen_at: "2026-03-09 12:00:00".into(),
+            last_seen_game_name: "Example".into(),
+            last_seen_tag_line: "TAG".into(),
+            ..Default::default()
+        };
+
+        let summary = format_last_seen_summary(&player, "Blue");
+
+        assert!(summary.contains("Last seen Jett on your team"));
+        assert!(summary.contains("(1 time)"));
+        assert!(!summary.contains("previously"));
+        assert!(!summary.contains("Example#TAG"));
     }
 }
