@@ -33,8 +33,8 @@ pub struct ColumnConfig {
     pub skin: bool,
     #[serde(default = "bool_true")]
     pub rr: bool,
-    #[serde(default = "bool_true")]
-    pub earned_rr: bool,
+    #[serde(default = "bool_true", alias = "earned_rr")]
+    pub recent_results: bool,
     #[serde(default = "bool_true")]
     pub peak_rank: bool,
     #[serde(default = "bool_true")]
@@ -127,7 +127,7 @@ impl Default for ColumnConfig {
         Self {
             skin: true,
             rr: true,
-            earned_rr: true,
+            recent_results: true,
             peak_rank: true,
             previous_rank: true,
             leaderboard: true,
@@ -207,5 +207,23 @@ impl Config {
         let dirs =
             directories::ProjectDirs::from("dev", "star", "star-client").expect("home directory");
         dirs.data_dir().to_path_buf()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn loads_legacy_earned_rr_column_key() {
+        let config: Config = toml::from_str(
+            r#"
+[columns]
+earned_rr = false
+"#,
+        )
+        .unwrap();
+
+        assert!(!config.columns.recent_results);
     }
 }

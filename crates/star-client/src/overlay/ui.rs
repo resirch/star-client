@@ -12,7 +12,7 @@ const STAR_W: f32 = 18.0;
 const AGENT_W: f32 = 62.0;
 const NAME_W: f32 = 125.0;
 const RANK_W: f32 = 82.0;
-const RANK_W_TRUNCATED: f32 = 64.0;
+const RANK_W_TRUNCATED: f32 = 56.0;
 const RR_W: f32 = 55.0;
 const PEAK_W: f32 = 82.0;
 const PREV_W: f32 = 82.0;
@@ -20,7 +20,7 @@ const LB_W: f32 = 40.0;
 const KD_W: f32 = 48.0;
 const HS_W: f32 = 48.0;
 const WR_W: f32 = 50.0;
-const ERR_W: f32 = 74.0;
+const FORM_W: f32 = 58.0;
 const LVL_W: f32 = 38.0;
 const SKIN_W: f32 = 156.0;
 const ROW_H: f32 = 22.0;
@@ -39,10 +39,6 @@ pub fn render_overlay(
     local_puuid: &str,
     config: &Config,
 ) {
-    if players.is_empty() {
-        return;
-    }
-
     let columns = &config.columns;
     let screen = ctx.screen_rect();
     let show_leaderboard = leaderboard_column_visible(config, players);
@@ -64,36 +60,45 @@ pub fn render_overlay(
                 .show(ui, |ui: &mut Ui| {
                     ui.set_min_width(tw);
                     title_bar(ui, game_state, match_context, config);
-                    ui.add_space(4.0);
-                    header_row(
-                        ui,
-                        columns,
-                        config,
-                        show_leaderboard,
-                        show_skin,
-                        &selected_weapon_label(&config.overlay.weapon),
-                    );
-                    ui.add_space(2.0);
-
-                    let (allies, enemies) = split_players_by_team(players, local_puuid);
-
-                    if !allies.is_empty() {
-                        team_label(ui, "YOUR TEAM");
-                        for p in &allies {
-                            player_row(ui, p, config, true, show_leaderboard, show_skin);
-                        }
-                    }
-
-                    if !enemies.is_empty() {
+                    if players.is_empty() {
                         ui.add_space(6.0);
-                        team_label(ui, "ENEMY TEAM");
-                        for p in &enemies {
-                            player_row(ui, p, config, false, show_leaderboard, show_skin);
-                        }
-                    }
+                        ui.label(
+                            RichText::new("No active match data")
+                                .font(theme::body_font())
+                                .color(theme::TEXT_MUTED),
+                        );
+                    } else {
+                        ui.add_space(4.0);
+                        header_row(
+                            ui,
+                            columns,
+                            config,
+                            show_leaderboard,
+                            show_skin,
+                            &selected_weapon_label(&config.overlay.weapon),
+                        );
+                        ui.add_space(2.0);
 
-                    if config.features.last_played {
-                        last_played_section(ui, players, local_puuid);
+                        let (allies, enemies) = split_players_by_team(players, local_puuid);
+
+                        if !allies.is_empty() {
+                            team_label(ui, "YOUR TEAM");
+                            for p in &allies {
+                                player_row(ui, p, config, true, show_leaderboard, show_skin);
+                            }
+                        }
+
+                        if !enemies.is_empty() {
+                            ui.add_space(6.0);
+                            team_label(ui, "ENEMY TEAM");
+                            for p in &enemies {
+                                player_row(ui, p, config, false, show_leaderboard, show_skin);
+                            }
+                        }
+
+                        if config.features.last_played {
+                            last_played_section(ui, players, local_puuid);
+                        }
                     }
                 });
         });
@@ -146,8 +151,8 @@ fn table_width(config: &Config, show_leaderboard: bool, show_skin: bool) -> f32 
     if c.winrate {
         w += WR_W;
     }
-    if c.earned_rr {
-        w += ERR_W;
+    if c.recent_results {
+        w += FORM_W;
     }
     if c.level {
         w += LVL_W;
@@ -239,8 +244,8 @@ fn header_row(
         if c.winrate {
             hdr_cell(ui, "WR%", WR_W, &f, clr);
         }
-        if c.earned_rr {
-            hdr_cell(ui, "ΔRR", ERR_W, &f, clr);
+        if c.recent_results {
+            hdr_cell(ui, "LAST 5", FORM_W, &f, clr);
         }
         if c.level {
             hdr_cell(ui, "LVL", LVL_W, &f, clr);
@@ -355,7 +360,14 @@ fn player_row(
 
         // Rank (always shown)
         if p.enriched {
-            rank_cell(ui, p.current_rank, config, rank_w, &f, rank_color(p.current_rank));
+            rank_cell(
+                ui,
+                p.current_rank,
+                config,
+                rank_w,
+                &f,
+                rank_color(p.current_rank),
+            );
         } else {
             text_cell(ui, &loading, rank_w, &f, theme::TEXT_MUTED);
         }
@@ -471,11 +483,11 @@ fn player_row(
             text_cell(ui, &t, WR_W, &f, clr);
         }
 
-        if c.earned_rr {
+        if c.recent_results {
             if p.enriched {
-                delta_rr_cell(ui, p, ERR_W, &f);
+                recent_results_cell(ui, p, FORM_W, &f);
             } else {
-                text_cell(ui, &loading, ERR_W, &f, theme::TEXT_MUTED);
+                text_cell(ui, &loading, FORM_W, &f, theme::TEXT_MUTED);
             }
         }
 
@@ -578,7 +590,10 @@ fn rank_cell(
 
     let Some(suffix) = suffix else {
         painter.with_clip_rect(clip_rect).galley(
-            Pos2::new(clip_rect.left(), rect.center().y - label_galley.size().y / 2.0),
+            Pos2::new(
+                clip_rect.left(),
+                rect.center().y - label_galley.size().y / 2.0,
+            ),
             label_galley,
             color,
         );
@@ -599,14 +614,15 @@ fn rank_cell(
     let suffix_width = suffix_galley.size().x;
     let suffix_left = (clip_rect.right() - suffix_width).max(clip_rect.left());
     let left_limit = (suffix_left - 4.0).max(clip_rect.left());
-    let label_clip_rect = Rect::from_min_max(
-        clip_rect.min,
-        Pos2::new(left_limit, clip_rect.bottom()),
-    );
+    let label_clip_rect =
+        Rect::from_min_max(clip_rect.min, Pos2::new(left_limit, clip_rect.bottom()));
 
     if label_clip_rect.width() > 0.0 {
         painter.with_clip_rect(label_clip_rect).galley(
-            Pos2::new(label_clip_rect.left(), rect.center().y - label_galley.size().y / 2.0),
+            Pos2::new(
+                label_clip_rect.left(),
+                rect.center().y - label_galley.size().y / 2.0,
+            ),
             label_galley,
             color,
         );
@@ -726,7 +742,7 @@ fn skin_upgrade_bar_width(skin_level_total: usize) -> f32 {
     }
 }
 
-fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
+fn recent_results_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
     let mut job = LayoutJob::default();
     let base = TextFormat {
         font_id: font.clone(),
@@ -734,41 +750,23 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
         ..Default::default()
     };
 
-    if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
+    if player.recent_results.is_empty() {
         job.append("-", 0.0, base);
         layout_job_cell(ui, job, w, theme::TEXT_MUTED);
         return;
     }
 
-    let rr_prefix = if player.earned_rr > 0 { "+" } else { "" };
-    let rr_text = format!("{rr_prefix}{}", player.earned_rr);
-    job.append(
-        &rr_text,
-        0.0,
-        TextFormat {
-            font_id: font.clone(),
-            color: theme::rr_change_color(player.earned_rr),
-            ..Default::default()
-        },
-    );
-    job.append(
-        " ",
-        0.0,
-        TextFormat {
-            font_id: font.clone(),
-            color: theme::TEXT_SECONDARY,
-            ..Default::default()
-        },
-    );
-    job.append(
-        &format!("({})", player.afk_penalty),
-        0.0,
-        TextFormat {
-            font_id: font.clone(),
-            color: theme::rr_penalty_color(player.afk_penalty),
-            ..Default::default()
-        },
-    );
+    for result in player.recent_results.chars() {
+        job.append(
+            &result.to_string(),
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color: theme::recent_result_color(result),
+                ..Default::default()
+            },
+        );
+    }
     layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
 }
 
@@ -871,15 +869,15 @@ fn format_rank_name(tier: i32, config: &Config) -> String {
 
 fn truncated_rank_name(tier: i32) -> &'static str {
     match tier {
-        3..=5 => "Irn",
-        6..=8 => "Brz",
-        9..=11 => "Slv",
-        12..=14 => "Gld",
-        15..=17 => "Plt",
-        18..=20 => "Dia",
-        21..=23 => "Asc",
-        24..=26 => "Imm",
-        27 => "Rad",
+        3..=5 => "IRN",
+        6..=8 => "BRZ",
+        9..=11 => "SLV",
+        12..=14 => "GLD",
+        15..=17 => "PLT",
+        18..=20 => "DIA",
+        21..=23 => "ASC",
+        24..=26 => "IMM",
+        27 => "RAD",
         _ => "Unranked",
     }
 }
@@ -1234,14 +1232,14 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(format_rank_display(&player, &config), "Imm II");
+        assert_eq!(format_rank_display(&player, &config), "IMM II");
         assert!(rr_column_visible(&config));
-        assert_eq!(rank_column_width(&config), 98.0);
-        assert_eq!(peak_column_width(&config), 64.0);
-        assert_eq!(previous_rank_column_width(&config), 64.0);
+        assert_eq!(rank_column_width(&config), 90.0);
+        assert_eq!(peak_column_width(&config), 56.0);
+        assert_eq!(previous_rank_column_width(&config), 56.0);
         assert_eq!(
             format_rank_parts(player.current_rank, &config),
-            ("Imm".to_string(), Some("II".to_string()))
+            ("IMM".to_string(), Some("II".to_string()))
         );
 
         config.features.truncate_ranks = false;

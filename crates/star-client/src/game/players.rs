@@ -209,7 +209,7 @@ pub async fn enrich_player(
 
     let comp_ok = match api.get_competitive_updates(&puuid).await {
         Ok(updates) => {
-            extract_earned_rr(player, &updates);
+            extract_recent_results(player, &updates);
             extract_performance_from_updates(player, api, &updates).await;
             true
         }
@@ -320,7 +320,9 @@ fn previous_rank_tier(
     season_ids: &[String],
     current_season: &str,
 ) -> i32 {
-    let Some(current_index) = season_ids.iter().position(|season_id| season_id == current_season)
+    let Some(current_index) = season_ids
+        .iter()
+        .position(|season_id| season_id == current_season)
     else {
         return 0;
     };
@@ -345,27 +347,57 @@ fn previous_rank_tier(
     0
 }
 
-fn extract_earned_rr(display: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
+fn extract_recent_results(display: &mut PlayerDisplayData, updates: &CompetitiveUpdatesResponse) {
     let short_id = &display.puuid[..8.min(display.puuid.len())];
     tracing::debug!(
         "Competitive updates for {}: {} matches",
         short_id,
         updates.matches.len()
     );
-    if let Some(first) = updates.matches.first() {
-        display.earned_rr = first.ranked_rating_earned.unwrap_or(0);
-        display.afk_penalty = first.afk_penalty.unwrap_or(0);
-        display.has_comp_update = true;
-        tracing::debug!(
-            "Comp update for {}: earned_rr={:?} tier_after={:?} tier_before={:?} rr_after={:?} rr_before={:?}",
-            short_id,
-            first.ranked_rating_earned,
-            first.tier_after_update,
-            first.tier_before_update,
-            first.ranked_rating_after_update,
-            first.ranked_rating_before_update
-        );
+
+    display.recent_results = updates
+        .matches
+        .iter()
+        .take(5)
+        .filter_map(competitive_update_result)
+        .collect();
+
+    let recent_results = if display.recent_results.is_empty() {
+        "-"
+    } else {
+        display.recent_results.as_str()
+    };
+
+    tracing::debug!(
+        "Comp update summary for {}: recent_results={}",
+        short_id,
+        recent_results
+    );
+}
+
+fn competitive_update_result(update: &CompetitiveUpdate) -> Option<char> {
+    match update.ranked_rating_earned.unwrap_or(0).cmp(&0) {
+        std::cmp::Ordering::Greater => Some('W'),
+        std::cmp::Ordering::Less => Some('L'),
+        std::cmp::Ordering::Equal => compare_update_progress(update),
     }
+}
+
+fn compare_update_progress(update: &CompetitiveUpdate) -> Option<char> {
+    match compare_optional_i32(update.tier_after_update, update.tier_before_update).or_else(|| {
+        compare_optional_i32(
+            update.ranked_rating_after_update,
+            update.ranked_rating_before_update,
+        )
+    }) {
+        Some(std::cmp::Ordering::Greater) => Some('W'),
+        Some(std::cmp::Ordering::Less) => Some('L'),
+        _ => None,
+    }
+}
+
+fn compare_optional_i32(after: Option<i32>, before: Option<i32>) -> Option<std::cmp::Ordering> {
+    Some(after?.cmp(&before?))
 }
 
 async fn extract_performance_from_updates(
@@ -500,9 +532,13 @@ fn standard_skin_name(weapon_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_season_lookup, extract_rank_data, normalize_overlay_weapon, SeasonLookup};
+    use super::{
+        build_season_lookup, competitive_update_result, extract_rank_data, extract_recent_results,
+        normalize_overlay_weapon, SeasonLookup,
+    };
     use crate::riot::types::{
-        ContentResponse, ContentSeason, MmrResponse, PlayerDisplayData, QueueSkill, SeasonalInfo,
+        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason, MmrResponse,
+        PlayerDisplayData, QueueSkill, SeasonalInfo,
     };
     use std::collections::HashMap;
 
@@ -645,5 +681,55 @@ mod tests {
     fn normalizes_overlay_weapon_choices() {
         assert_eq!(normalize_overlay_weapon("phantom"), "Phantom");
         assert_eq!(normalize_overlay_weapon("unknown"), "Vandal");
+    }
+
+    #[test]
+    fn builds_recent_results_from_latest_five_updates() {
+        let mut player = PlayerDisplayData::default();
+        let updates = CompetitiveUpdatesResponse {
+            matches: vec![
+                CompetitiveUpdate {
+                    ranked_rating_earned: Some(18),
+                    ..Default::default()
+                },
+                CompetitiveUpdate {
+                    ranked_rating_earned: Some(12),
+                    ..Default::default()
+                },
+                CompetitiveUpdate {
+                    ranked_rating_earned: Some(-20),
+                    ..Default::default()
+                },
+                CompetitiveUpdate {
+                    ranked_rating_earned: Some(-14),
+                    ..Default::default()
+                },
+                CompetitiveUpdate {
+                    ranked_rating_earned: Some(9),
+                    ..Default::default()
+                },
+                CompetitiveUpdate {
+                    ranked_rating_earned: Some(11),
+                    ..Default::default()
+                },
+            ],
+            subject: None,
+        };
+
+        extract_recent_results(&mut player, &updates);
+
+        assert_eq!(player.recent_results, "WWLLW");
+    }
+
+    #[test]
+    fn infers_result_from_progress_when_rr_delta_is_zero() {
+        let update = CompetitiveUpdate {
+            ranked_rating_earned: Some(0),
+            ranked_rating_after_update: Some(71),
+            ranked_rating_before_update: Some(55),
+            ..Default::default()
+        };
+
+        assert_eq!(competitive_update_result(&update), Some('W'));
     }
 }

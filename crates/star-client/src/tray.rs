@@ -50,9 +50,9 @@ impl SystemTray {
         append_check(
             &columns_menu,
             &mut check_items,
-            "columns.earned_rr",
-            "Earned RR",
-            config.columns.earned_rr,
+            "columns.recent_results",
+            "Last 5",
+            config.columns.recent_results,
         )?;
         append_check(
             &columns_menu,
@@ -328,8 +328,8 @@ fn handle_setting_event(app_state: &Arc<RwLock<AppState>>, id: &str) -> bool {
                 changed = true;
                 true
             }
-            "columns.earned_rr" => {
-                state.config.columns.earned_rr = !state.config.columns.earned_rr;
+            "columns.recent_results" => {
+                state.config.columns.recent_results = !state.config.columns.recent_results;
                 changed = true;
                 true
             }
@@ -462,7 +462,7 @@ fn check_state_for_id(config: &Config, id: &str) -> Option<bool> {
     Some(match id {
         "columns.skin" => config.columns.skin,
         "columns.rr" => config.columns.rr,
-        "columns.earned_rr" => config.columns.earned_rr,
+        "columns.recent_results" => config.columns.recent_results,
         "columns.peak_rank" => config.columns.peak_rank,
         "columns.previous_rank" => config.columns.previous_rank,
         "columns.leaderboard" => config.columns.leaderboard,
