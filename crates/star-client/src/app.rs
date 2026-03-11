@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::discord::rpc::DiscordRpc;
-use crate::game::history::PlayerHistory;
+use crate::game::history::{EncounterRecord, PlayerHistory};
 use crate::game::match_data::{self, MatchContext};
 use crate::game::party;
 use crate::game::players;
@@ -178,28 +178,53 @@ pub async fn run_data_loop(
                 let state = app_state.read().await;
                 state.local_puuid.clone()
             };
+            let existing_players_by_puuid: HashMap<String, PlayerDisplayData> = {
+                let state = app_state.read().await;
+                if state.last_match_id == match_id {
+                    state
+                        .players
+                        .iter()
+                        .cloned()
+                        .map(|player| (player.puuid.clone(), player))
+                        .collect()
+                } else {
+                    HashMap::new()
+                }
+            };
             if let Some(history) = &history {
                 for player in &mut players_data {
+                    hydrate_player_history(
+                        player,
+                        &local_puuid,
+                        &existing_players_by_puuid,
+                        history.encounter(&player.puuid),
+                    );
+                }
+
+                for player in &players_data {
                     if player.puuid == local_puuid {
                         continue;
                     }
 
-                    if let Some(encounter) = history.encounter(&player.puuid) {
-                        player.times_seen_before = encounter.times_seen;
-                        player.last_seen_at = encounter.last_seen_at;
-                        player.last_seen_game_name = encounter.game_name;
-                        player.last_seen_tag_line = encounter.tag_line;
-                    }
-                }
-
-                for p in &players_data {
-                    if p.puuid != local_puuid {
-                        let update_identity = !p.is_incognito && !p.game_name.is_empty();
+                    let update_identity = !player.game_name.is_empty();
+                    if is_new_match {
                         let _ = history.record_encounter(
-                            &p.puuid,
-                            &p.game_name,
-                            &p.tag_line,
+                            &player.puuid,
+                            &player.game_name,
+                            &player.tag_line,
                             update_identity,
+                        );
+                        continue;
+                    }
+
+                    if should_refresh_encounter_identity(
+                        player,
+                        existing_players_by_puuid.get(&player.puuid),
+                    ) {
+                        let _ = history.update_identity(
+                            &player.puuid,
+                            &player.game_name,
+                            &player.tag_line,
                         );
                     }
                 }
@@ -398,10 +423,52 @@ fn merge_pregame_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<P
     *existing = merged;
 }
 
+fn hydrate_player_history(
+    player: &mut PlayerDisplayData,
+    local_puuid: &str,
+    existing_players_by_puuid: &HashMap<String, PlayerDisplayData>,
+    encounter: Option<EncounterRecord>,
+) {
+    if player.puuid == local_puuid {
+        return;
+    }
+
+    if let Some(existing_player) = existing_players_by_puuid.get(&player.puuid) {
+        player.times_seen_before = existing_player.times_seen_before;
+        player.last_seen_at = existing_player.last_seen_at.clone();
+        player.last_seen_game_name = existing_player.last_seen_game_name.clone();
+        player.last_seen_tag_line = existing_player.last_seen_tag_line.clone();
+    } else if let Some(encounter) = encounter {
+        player.times_seen_before = encounter.times_seen;
+        player.last_seen_at = encounter.last_seen_at;
+        player.last_seen_game_name = encounter.game_name;
+        player.last_seen_tag_line = encounter.tag_line;
+    }
+}
+
+fn should_refresh_encounter_identity(
+    player: &PlayerDisplayData,
+    existing_player: Option<&PlayerDisplayData>,
+) -> bool {
+    if player.game_name.is_empty() {
+        return false;
+    }
+
+    match existing_player {
+        Some(existing_player) => {
+            existing_player.game_name != player.game_name
+                || existing_player.tag_line != player.tag_line
+        }
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::merge_pregame_players;
+    use super::{hydrate_player_history, merge_pregame_players, should_refresh_encounter_identity};
+    use crate::game::history::EncounterRecord;
     use crate::riot::types::PlayerDisplayData;
+    use std::collections::HashMap;
 
     #[test]
     fn pregame_merge_updates_agent_name_without_dropping_enriched_fields() {
@@ -439,5 +506,100 @@ mod tests {
         assert_eq!(existing[0].party_number, 2);
         assert!(existing[0].is_star_user);
         assert!(existing[0].enriched);
+    }
+
+    #[test]
+    fn hydrate_player_history_prefers_existing_match_snapshot() {
+        let mut player = PlayerDisplayData {
+            puuid: "player-1".into(),
+            ..Default::default()
+        };
+        let existing_players_by_puuid = HashMap::from([(
+            "player-1".to_string(),
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                times_seen_before: 4,
+                last_seen_at: "2026-03-08 12:00:00".into(),
+                last_seen_game_name: "Existing".into(),
+                last_seen_tag_line: "OLD".into(),
+                ..Default::default()
+            },
+        )]);
+
+        hydrate_player_history(
+            &mut player,
+            "local-player",
+            &existing_players_by_puuid,
+            Some(EncounterRecord {
+                game_name: "Database".into(),
+                tag_line: "NEW".into(),
+                times_seen: 9,
+                last_seen_at: "2026-03-10 12:00:00".into(),
+            }),
+        );
+
+        assert_eq!(player.times_seen_before, 4);
+        assert_eq!(player.last_seen_at, "2026-03-08 12:00:00");
+        assert_eq!(player.last_seen_game_name, "Existing");
+        assert_eq!(player.last_seen_tag_line, "OLD");
+    }
+
+    #[test]
+    fn hydrate_player_history_uses_database_when_no_existing_snapshot() {
+        let mut player = PlayerDisplayData {
+            puuid: "player-1".into(),
+            ..Default::default()
+        };
+
+        hydrate_player_history(
+            &mut player,
+            "local-player",
+            &HashMap::new(),
+            Some(EncounterRecord {
+                game_name: "Database".into(),
+                tag_line: "TAG".into(),
+                times_seen: 3,
+                last_seen_at: "2026-03-07 12:00:00".into(),
+            }),
+        );
+
+        assert_eq!(player.times_seen_before, 3);
+        assert_eq!(player.last_seen_at, "2026-03-07 12:00:00");
+        assert_eq!(player.last_seen_game_name, "Database");
+        assert_eq!(player.last_seen_tag_line, "TAG");
+    }
+
+    #[test]
+    fn refreshes_encounter_identity_when_name_appears_mid_match() {
+        let player = PlayerDisplayData {
+            game_name: "Revealed".into(),
+            tag_line: "TAG".into(),
+            ..Default::default()
+        };
+        let existing_player = PlayerDisplayData::default();
+
+        assert!(should_refresh_encounter_identity(
+            &player,
+            Some(&existing_player)
+        ));
+    }
+
+    #[test]
+    fn skips_encounter_identity_refresh_when_name_is_unchanged() {
+        let player = PlayerDisplayData {
+            game_name: "Same".into(),
+            tag_line: "TAG".into(),
+            ..Default::default()
+        };
+        let existing_player = PlayerDisplayData {
+            game_name: "Same".into(),
+            tag_line: "TAG".into(),
+            ..Default::default()
+        };
+
+        assert!(!should_refresh_encounter_identity(
+            &player,
+            Some(&existing_player)
+        ));
     }
 }

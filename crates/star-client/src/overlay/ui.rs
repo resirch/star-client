@@ -701,8 +701,8 @@ fn state_color(state: &GameState) -> egui::Color32 {
     }
 }
 
-fn rr_column_visible(_config: &Config) -> bool {
-    false
+fn rr_column_visible(config: &Config) -> bool {
+    config.columns.rr
 }
 
 fn rank_column_width(config: &Config) -> f32 {
@@ -737,12 +737,7 @@ fn selected_weapon_label(weapon_name: &str) -> String {
 }
 
 fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
-    let rank = format_rank_name(player.current_rank, config);
-    if config.columns.rr && player.current_rank > 0 {
-        format!("{rank} ({})", player.rr)
-    } else {
-        rank
-    }
+    format_rank_name(player.current_rank, config)
 }
 
 fn format_peak_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
@@ -1045,7 +1040,8 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 mod tests {
     use super::{
         format_last_seen_summary, format_rank_display, format_rank_name, format_server_id,
-        format_skin_name, leaderboard_column_visible, skin_column_visible, split_players_by_team,
+        format_skin_name, leaderboard_column_visible, rr_column_visible, skin_column_visible,
+        split_players_by_team,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1144,7 +1140,8 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(format_rank_display(&player, &config), "Imm II (87)");
+        assert_eq!(format_rank_display(&player, &config), "Imm II");
+        assert!(rr_column_visible(&config));
 
         config.features.truncate_ranks = false;
         config.features.roman_numerals = false;

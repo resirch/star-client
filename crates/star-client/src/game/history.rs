@@ -60,6 +60,18 @@ impl PlayerHistory {
         Ok(())
     }
 
+    pub fn update_identity(&self, puuid: &str, game_name: &str, tag_line: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO encounters (puuid, game_name, tag_line, times_seen, last_seen)
+             VALUES (?1, ?2, ?3, 1, datetime('now'))
+             ON CONFLICT(puuid) DO UPDATE SET
+                game_name = ?2,
+                tag_line = ?3",
+            rusqlite::params![puuid, game_name, tag_line],
+        )?;
+        Ok(())
+    }
+
     pub fn encounter(&self, puuid: &str) -> Option<EncounterRecord> {
         self.conn
             .query_row(
