@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+const STARTUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -61,49 +63,81 @@ fn main() {
             .expect("tokio runtime");
 
         rt.block_on(async move {
-            let lockfile_data = tokio::task::spawn_blocking(lockfile::wait_for_lockfile)
-                .await
-                .expect("lockfile task");
-
-            let riot_auth = match auth::authenticate(&lockfile_data).await {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::error!("Authentication failed: {}", e);
-                    return;
-                }
-            };
-
-            tracing::info!(
-                "Authenticated as {} (region: {}, shard: {})",
-                &riot_auth.puuid[..8],
-                riot_auth.region,
-                riot_auth.shard
-            );
-
-            {
-                let mut state = app_state_bg.write().await;
-                state.local_puuid = riot_auth.puuid.clone();
-            }
-
-            let mut api_client = RiotApiClient::new(riot_auth.clone()).expect("API client");
-            if let Err(e) = api_client.fetch_client_version().await {
-                tracing::warn!("Could not fetch client version: {}", e);
-            }
-            let api = Arc::new(RwLock::new(api_client));
-
-            let star_client = Arc::new(StarClient::new(&config_bg.star.backend_url));
-            if config_bg.star.enabled {
-                if let Err(e) = star_client.register(&riot_auth.puuid).await {
-                    tracing::warn!("Star registration failed (backend may be offline): {}", e);
-                }
-                star_client.start_heartbeat_loop();
-            }
-
-            app::run_data_loop(app_state_bg, api, star_client, quit_flag_bg).await;
+            run_background_loop(app_state_bg, config_bg, quit_flag_bg).await;
         });
     });
 
     run_overlay(app_state, quit_flag, key_held, tray);
+}
+
+async fn run_background_loop(
+    app_state: Arc<RwLock<AppState>>,
+    config: Config,
+    quit_flag: Arc<AtomicBool>,
+) {
+    loop {
+        if quit_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let lockfile_data = tokio::task::spawn_blocking(lockfile::wait_for_lockfile)
+            .await
+            .expect("lockfile task");
+
+        if quit_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let riot_auth = match auth::authenticate(&lockfile_data).await {
+            Ok(auth) => auth,
+            Err(e) => {
+                tracing::warn!("Authentication failed, retrying: {}", e);
+                tokio::time::sleep(STARTUP_RETRY_DELAY).await;
+                continue;
+            }
+        };
+
+        tracing::info!(
+            "Authenticated as {} (region: {}, shard: {})",
+            &riot_auth.puuid[..8],
+            riot_auth.region,
+            riot_auth.shard
+        );
+
+        {
+            let mut state = app_state.write().await;
+            state.local_puuid = riot_auth.puuid.clone();
+        }
+
+        let mut api_client = RiotApiClient::new(riot_auth.clone()).expect("API client");
+        if let Err(e) = api_client.fetch_client_version().await {
+            tracing::warn!("Could not fetch client version: {}", e);
+        }
+        let api = Arc::new(RwLock::new(api_client));
+
+        let star_client = Arc::new(StarClient::new(&config.star.backend_url));
+        if config.star.enabled {
+            if let Err(e) = star_client.register(&riot_auth.puuid).await {
+                tracing::warn!("Star registration failed (backend may be offline): {}", e);
+            }
+            star_client.start_heartbeat_loop();
+        }
+
+        app::run_data_loop(
+            Arc::clone(&app_state),
+            api,
+            star_client,
+            Arc::clone(&quit_flag),
+        )
+        .await;
+
+        if quit_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        tracing::warn!("Data loop exited unexpectedly, restarting session bootstrap");
+        tokio::time::sleep(STARTUP_RETRY_DELAY).await;
+    }
 }
 
 fn run_overlay(
