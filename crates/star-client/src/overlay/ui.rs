@@ -55,7 +55,8 @@ pub fn render_overlay(
     config: &Config,
 ) {
     let columns = &config.columns;
-    let layout = overlay_layout(ctx, game_state, players, columns, config);
+    let visible_players = visible_players(game_state, players);
+    let layout = overlay_layout(ctx, game_state, visible_players, columns, config);
     let y = 60.0;
 
     egui::Area::new(egui::Id::new("star_overlay"))
@@ -73,7 +74,7 @@ pub fn render_overlay(
                     ui.set_min_width(layout.frame_width);
                     ui.set_max_width(layout.frame_width);
                     title_bar(ui, game_state, match_context, config);
-                    if players.is_empty() {
+                    if visible_players.is_empty() {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new("No active match data")
@@ -92,7 +93,7 @@ pub fn render_overlay(
                         );
                         ui.add_space(2.0);
 
-                        let (allies, enemies) = split_players_by_team(players, local_puuid);
+                        let (allies, enemies) = split_players_by_team(visible_players, local_puuid);
 
                         if !allies.is_empty() {
                             team_label(ui, "YOUR TEAM", allies[0].team_id.as_str());
@@ -126,11 +127,22 @@ pub fn render_overlay(
                         }
 
                         if config.features.last_played {
-                            last_played_section(ui, players, local_puuid);
+                            last_played_section(ui, visible_players, local_puuid);
                         }
                     }
                 });
         });
+}
+
+fn visible_players<'a>(
+    game_state: &GameState,
+    players: &'a [PlayerDisplayData],
+) -> &'a [PlayerDisplayData] {
+    if game_state.is_in_match() {
+        players
+    } else {
+        &[]
+    }
 }
 
 fn split_players_by_team<'a>(

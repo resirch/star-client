@@ -24,6 +24,8 @@ pub struct AppState {
     pub local_puuid: String,
 }
 
+const WAITING_FOR_CLIENT_DEBOUNCE_POLLS: u8 = 3;
+
 impl AppState {
     pub fn new(config: Config) -> Self {
         Self {
@@ -59,6 +61,7 @@ pub async fn run_data_loop(
     }
 
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut waiting_for_client_polls = 0u8;
     let mut selected_overlay_weapon = {
         let state = app_state.read().await;
         players::normalize_overlay_weapon(&state.config.overlay.weapon).to_string()
@@ -73,9 +76,18 @@ pub async fn run_data_loop(
         }
 
         let mut api_guard = api.write().await;
-        let new_state = state::detect_game_state(&api_guard)
+        let detected_state = state::detect_game_state(&api_guard)
             .await
             .unwrap_or(GameState::Menu);
+        let previous_state = {
+            let state = app_state.read().await;
+            state.game_state.clone()
+        };
+        let new_state = stabilize_game_state(
+            &previous_state,
+            detected_state,
+            &mut waiting_for_client_polls,
+        );
 
         let config = {
             let state = app_state.read().await;
@@ -121,10 +133,11 @@ pub async fn run_data_loop(
                 GameState::Ingame { .. } if config.behavior.auto_hide_ingame => {
                     state.auto_visible = false;
                 }
-                GameState::Menu => {
+                GameState::Menu | GameState::WaitingForClient => {
                     state.auto_visible = false;
                     state.players.clear();
                     state.match_context = None;
+                    state.last_match_id.clear();
                 }
                 _ => {}
             }
@@ -463,10 +476,33 @@ fn should_refresh_encounter_identity(
     }
 }
 
+fn stabilize_game_state(
+    previous_state: &GameState,
+    detected_state: GameState,
+    waiting_for_client_polls: &mut u8,
+) -> GameState {
+    if detected_state == GameState::WaitingForClient
+        && previous_state != &GameState::WaitingForClient
+    {
+        *waiting_for_client_polls = waiting_for_client_polls.saturating_add(1);
+        if *waiting_for_client_polls < WAITING_FOR_CLIENT_DEBOUNCE_POLLS {
+            return previous_state.clone();
+        }
+    } else {
+        *waiting_for_client_polls = 0;
+    }
+
+    detected_state
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{hydrate_player_history, merge_pregame_players, should_refresh_encounter_identity};
+    use super::{
+        hydrate_player_history, merge_pregame_players, should_refresh_encounter_identity,
+        stabilize_game_state, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+    };
     use crate::game::history::EncounterRecord;
+    use crate::game::state::GameState;
     use crate::riot::types::PlayerDisplayData;
     use std::collections::HashMap;
 
@@ -601,5 +637,55 @@ mod tests {
             &player,
             Some(&existing_player)
         ));
+    }
+
+    #[test]
+    fn ignores_transient_waiting_for_client_while_in_match() {
+        let previous_state = GameState::Ingame {
+            match_id: "match-1".into(),
+        };
+        let mut waiting_polls = 0;
+
+        for _ in 0..WAITING_FOR_CLIENT_DEBOUNCE_POLLS - 1 {
+            assert_eq!(
+                stabilize_game_state(
+                    &previous_state,
+                    GameState::WaitingForClient,
+                    &mut waiting_polls,
+                ),
+                previous_state
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_waiting_for_client_after_threshold() {
+        let previous_state = GameState::Ingame {
+            match_id: "match-1".into(),
+        };
+        let mut waiting_polls = WAITING_FOR_CLIENT_DEBOUNCE_POLLS - 1;
+
+        assert_eq!(
+            stabilize_game_state(
+                &previous_state,
+                GameState::WaitingForClient,
+                &mut waiting_polls,
+            ),
+            GameState::WaitingForClient
+        );
+    }
+
+    #[test]
+    fn resets_waiting_debounce_after_valid_state() {
+        let previous_state = GameState::Ingame {
+            match_id: "match-1".into(),
+        };
+        let mut waiting_polls = 2;
+
+        assert_eq!(
+            stabilize_game_state(&previous_state, GameState::Menu, &mut waiting_polls,),
+            GameState::Menu
+        );
+        assert_eq!(waiting_polls, 0);
     }
 }
