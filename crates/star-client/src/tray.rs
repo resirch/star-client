@@ -11,11 +11,17 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 
 const HOTKEY_MENU_PREFIX: &str = "overlay.hotkey.";
 const WEAPON_MENU_PREFIX: &str = "overlay.weapon.";
+#[cfg(target_os = "windows")]
+const TOGGLE_TERMINAL_ID: &str = "toggle_terminal";
 
 pub struct SystemTray {
     _tray: TrayIcon,
     quit_flag: Arc<AtomicBool>,
     check_items: HashMap<&'static str, CheckMenuItem>,
+    #[cfg(target_os = "windows")]
+    terminal_item: MenuItem,
+    #[cfg(target_os = "windows")]
+    terminal_id: tray_icon::menu::MenuId,
     quit_id: tray_icon::menu::MenuId,
 }
 
@@ -213,6 +219,11 @@ impl SystemTray {
             config.star.enabled,
         )?;
 
+        #[cfg(target_os = "windows")]
+        let terminal_item =
+            MenuItem::with_id(TOGGLE_TERMINAL_ID, terminal_menu_label(), true, None);
+        #[cfg(target_os = "windows")]
+        let terminal_id = terminal_item.id().clone();
         let quit_item = MenuItem::with_id("quit", "Quit Star Client", true, None);
         let quit_id = quit_item.id().clone();
         menu.append(&columns_menu)?;
@@ -221,6 +232,8 @@ impl SystemTray {
         menu.append(&overlay_menu)?;
         menu.append(&star_menu)?;
         menu.append(&PredefinedMenuItem::separator())?;
+        #[cfg(target_os = "windows")]
+        menu.append(&terminal_item)?;
         menu.append(&quit_item)?;
 
         let icon = load_tray_icon();
@@ -235,12 +248,26 @@ impl SystemTray {
             _tray: tray,
             quit_flag,
             check_items,
+            #[cfg(target_os = "windows")]
+            terminal_item,
+            #[cfg(target_os = "windows")]
+            terminal_id,
             quit_id,
         })
     }
 
     pub fn poll_events(&self, app_state: &Arc<RwLock<AppState>>) {
+        #[cfg(target_os = "windows")]
+        self.sync_terminal_item_text();
+
         while let Ok(event) = MenuEvent::receiver().try_recv() {
+            #[cfg(target_os = "windows")]
+            if event.id() == &self.terminal_id {
+                toggle_terminal_visibility();
+                self.sync_terminal_item_text();
+                continue;
+            }
+
             if event.id() == &self.quit_id {
                 self.quit_flag.store(true, Ordering::Relaxed);
                 continue;
@@ -262,6 +289,11 @@ impl SystemTray {
                 item.set_checked(checked);
             }
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn sync_terminal_item_text(&self) {
+        self.terminal_item.set_text(terminal_menu_label());
     }
 }
 
@@ -514,4 +546,39 @@ fn load_tray_icon() -> tray_icon::Icon {
     }
 
     tray_icon::Icon::from_rgba(rgba, size, size).expect("valid icon")
+}
+
+#[cfg(target_os = "windows")]
+fn terminal_menu_label() -> &'static str {
+    if terminal_is_visible() {
+        "Hide Terminal"
+    } else {
+        "Show Terminal"
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn toggle_terminal_visibility() {
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
+
+    let hwnd = unsafe { GetConsoleWindow() };
+    if hwnd.is_null() {
+        tracing::debug!("No console window available to toggle");
+        return;
+    }
+
+    let command = if terminal_is_visible() { SW_HIDE } else { SW_SHOW };
+    unsafe {
+        ShowWindow(hwnd, command);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn terminal_is_visible() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+    let hwnd = unsafe { GetConsoleWindow() };
+    !hwnd.is_null() && unsafe { IsWindowVisible(hwnd) != 0 }
 }
