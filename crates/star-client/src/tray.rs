@@ -3,6 +3,8 @@ use crate::config::Config;
 use crate::game::players::{normalize_overlay_weapon, OVERLAY_WEAPONS};
 use crate::overlay::hotkeys::{normalize_hotkey_name, SUPPORTED_HOTKEYS};
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -221,7 +223,7 @@ impl SystemTray {
 
         #[cfg(target_os = "windows")]
         let terminal_item =
-            MenuItem::with_id(TOGGLE_TERMINAL_ID, terminal_menu_label(), true, None);
+            MenuItem::with_id(TOGGLE_TERMINAL_ID, terminal_menu_label(&config), true, None);
         #[cfg(target_os = "windows")]
         let terminal_id = terminal_item.id().clone();
         let quit_item = MenuItem::with_id("quit", "Quit Star Client", true, None);
@@ -258,13 +260,12 @@ impl SystemTray {
 
     pub fn poll_events(&self, app_state: &Arc<RwLock<AppState>>) {
         #[cfg(target_os = "windows")]
-        self.sync_terminal_item_text();
+        self.sync_terminal_item_text(app_state);
 
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             #[cfg(target_os = "windows")]
             if event.id() == &self.terminal_id {
-                toggle_terminal_visibility();
-                self.sync_terminal_item_text();
+                self.handle_terminal_restart(app_state);
                 continue;
             }
 
@@ -292,8 +293,58 @@ impl SystemTray {
     }
 
     #[cfg(target_os = "windows")]
-    fn sync_terminal_item_text(&self) {
-        self.terminal_item.set_text(terminal_menu_label());
+    fn sync_terminal_item_text(&self, app_state: &Arc<RwLock<AppState>>) {
+        let config = {
+            let state = app_state.blocking_read();
+            state.config.clone()
+        };
+        self.terminal_item.set_text(terminal_menu_label(&config));
+    }
+
+    #[cfg(target_os = "windows")]
+    fn handle_terminal_restart(&self, app_state: &Arc<RwLock<AppState>>) {
+        let (previous, updated_config) = {
+            let mut state = app_state.blocking_write();
+            let previous = state.config.behavior.launch_without_terminal;
+            state.config.behavior.launch_without_terminal = !previous;
+            (previous, state.config.clone())
+        };
+
+        if let Err(error) = updated_config.save() {
+            tracing::warn!("Failed to save terminal launch setting: {}", error);
+            self.restore_terminal_launch_setting(app_state, previous);
+            self.sync_terminal_item_text(app_state);
+            return;
+        }
+
+        if let Err(error) = relaunch_current_process(updated_config.behavior.launch_without_terminal) {
+            tracing::warn!("Failed to restart app for terminal setting change: {}", error);
+            self.restore_terminal_launch_setting(app_state, previous);
+            self.sync_terminal_item_text(app_state);
+            return;
+        }
+
+        self.quit_flag.store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn restore_terminal_launch_setting(
+        &self,
+        app_state: &Arc<RwLock<AppState>>,
+        launch_without_terminal: bool,
+    ) {
+        let reverted_config = {
+            let mut state = app_state.blocking_write();
+            state.config.behavior.launch_without_terminal = launch_without_terminal;
+            state.config.clone()
+        };
+
+        if let Err(error) = reverted_config.save() {
+            tracing::warn!(
+                "Failed to restore terminal launch setting after restart failure: {}",
+                error
+            );
+        }
     }
 }
 
@@ -549,36 +600,31 @@ fn load_tray_icon() -> tray_icon::Icon {
 }
 
 #[cfg(target_os = "windows")]
-fn terminal_menu_label() -> &'static str {
-    if terminal_is_visible() {
-        "Hide Terminal"
+fn terminal_menu_label(config: &Config) -> &'static str {
+    if config.behavior.launch_without_terminal {
+        "Show Terminal (Restart Required)"
     } else {
-        "Show Terminal"
+        "Hide Terminal (Restart Required)"
     }
 }
 
 #[cfg(target_os = "windows")]
-fn toggle_terminal_visibility() {
-    use windows_sys::Win32::System::Console::GetConsoleWindow;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
+fn relaunch_current_process(launch_without_terminal: bool) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 
-    let hwnd = unsafe { GetConsoleWindow() };
-    if hwnd.is_null() {
-        tracing::debug!("No console window available to toggle");
-        return;
+    let exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(exe);
+    command.args(std::env::args_os().skip(1));
+
+    if launch_without_terminal {
+        command
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
     }
 
-    let command = if terminal_is_visible() { SW_HIDE } else { SW_SHOW };
-    unsafe {
-        ShowWindow(hwnd, command);
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn terminal_is_visible() -> bool {
-    use windows_sys::Win32::System::Console::GetConsoleWindow;
-    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
-
-    let hwnd = unsafe { GetConsoleWindow() };
-    !hwnd.is_null() && unsafe { IsWindowVisible(hwnd) != 0 }
+    command.spawn()?;
+    Ok(())
 }
