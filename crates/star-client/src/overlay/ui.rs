@@ -1,3 +1,4 @@
+use crate::assets;
 use crate::config::{ColumnConfig, Config};
 use crate::game::match_data::MatchContext;
 use crate::game::state::GameState;
@@ -6,6 +7,7 @@ use crate::riot::types::{rank_color, PlayerDisplayData};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
+use std::cell::RefCell;
 
 const PARTY_W: f32 = 8.0;
 const STAR_W: f32 = 18.0;
@@ -18,6 +20,13 @@ const SKIN_UPGRADE_BAR_WIDTH: f32 = 1.5;
 const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
 const FRAME_INNER_MARGIN: f32 = 6.0;
 const RANK_CELL_GAP: f32 = 4.0;
+const OVERLAY_STAR_TEXTURE_SIZE: u32 = 64;
+const PLAYER_STAR_SIZE: f32 = 14.0;
+const TITLE_STAR_SIZE: f32 = 16.0;
+
+thread_local! {
+    static STAR_ICON_TEXTURE: RefCell<Option<Option<egui::TextureHandle>>> = const { RefCell::new(None) };
+}
 
 #[derive(Clone, Copy, Debug)]
 struct ColumnWidths {
@@ -522,11 +531,7 @@ fn title_bar(
     config: &Config,
 ) {
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("★ STAR CLIENT")
-                .font(theme::header_font())
-                .color(theme::STAR_COLOR),
-        );
+        render_title_star_label(ui);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
                 RichText::new(state.to_string())
@@ -671,13 +676,7 @@ fn player_row(
         // Star
         let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.star, ROW_H), egui::Sense::hover());
         if p.is_star_user {
-            ui.painter().text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                "★",
-                theme::star_font(),
-                theme::STAR_COLOR,
-            );
+            paint_star_icon(ui, rect, PLAYER_STAR_SIZE);
         }
 
         // Agent
@@ -832,6 +831,63 @@ fn player_row(
             );
         }
     });
+}
+
+fn render_title_star_label(ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(TITLE_STAR_SIZE, TITLE_STAR_SIZE),
+            egui::Sense::hover(),
+        );
+        paint_star_icon(ui, rect, TITLE_STAR_SIZE);
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("STAR CLIENT")
+                .font(theme::header_font())
+                .color(theme::STAR_COLOR),
+        );
+    });
+}
+
+fn paint_star_icon(ui: &mut Ui, rect: Rect, size: f32) {
+    if let Some(texture) = overlay_star_texture(ui.ctx()) {
+        let image_rect = Rect::from_center_size(rect.center(), Vec2::splat(size));
+        ui.put(
+            image_rect,
+            egui::Image::from_texture((texture.id(), texture.size_vec2()))
+                .fit_to_exact_size(image_rect.size()),
+        );
+    } else {
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "★",
+            theme::star_font(),
+            theme::STAR_COLOR,
+        );
+    }
+}
+
+fn overlay_star_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    STAR_ICON_TEXTURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(load_overlay_star_texture(ctx));
+        }
+        slot.as_ref().cloned().flatten()
+    })
+}
+
+fn load_overlay_star_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    match assets::overlay_star_image(OVERLAY_STAR_TEXTURE_SIZE) {
+        Ok(image) => {
+            Some(ctx.load_texture("overlay-star-icon", image, egui::TextureOptions::LINEAR))
+        }
+        Err(error) => {
+            tracing::warn!("Failed to load overlay star icon: {}", error);
+            None
+        }
+    }
 }
 
 fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {

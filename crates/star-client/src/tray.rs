@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::assets;
 use crate::config::Config;
 use crate::game::players::{normalize_overlay_weapon, OVERLAY_WEAPONS};
 use crate::overlay::hotkeys::{normalize_hotkey_name, SUPPORTED_HOTKEYS};
@@ -317,8 +318,13 @@ impl SystemTray {
             return;
         }
 
-        if let Err(error) = relaunch_current_process(updated_config.behavior.launch_without_terminal) {
-            tracing::warn!("Failed to restart app for terminal setting change: {}", error);
+        if let Err(error) =
+            relaunch_current_process(updated_config.behavior.launch_without_terminal)
+        {
+            tracing::warn!(
+                "Failed to restart app for terminal setting change: {}",
+                error
+            );
             self.restore_terminal_launch_setting(app_state, previous);
             self.sync_terminal_item_text(app_state);
             return;
@@ -577,11 +583,14 @@ fn check_state_for_id(config: &Config, id: &str) -> Option<bool> {
 }
 
 fn load_tray_icon() -> tray_icon::Icon {
-    // 16x16 solid gold star icon (minimal bitmap)
+    if let Ok((rgba, width, height)) = assets::tray_icon_rgba(32) {
+        if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, width, height) {
+            return icon;
+        }
+    }
+
     let size = 16u32;
     let mut rgba = vec![0u8; (size * size * 4) as usize];
-
-    // Draw a simple filled rectangle as fallback icon
     for y in 0..size {
         for x in 0..size {
             let idx = ((y * size + x) * 4) as usize;

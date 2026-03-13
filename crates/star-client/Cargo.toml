@@ -2,6 +2,7 @@
 name = "star-client"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 tokio = { workspace = true }
@@ -27,6 +28,7 @@ parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
+image = "0.25.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -35,3 +37,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+image = "0.25.10"
+winres = "0.1.12"
