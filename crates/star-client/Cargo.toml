@@ -32,6 +32,7 @@ image = "0.25.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
+    "Win32_System_Console",
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",

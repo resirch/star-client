@@ -35,6 +35,9 @@ fn main() {
         Config::default()
     });
 
+    #[cfg(target_os = "windows")]
+    apply_terminal_launch_preference(&config);
+
     let quit_flag = Arc::new(AtomicBool::new(false));
     let app_state = Arc::new(RwLock::new(AppState::new(config.clone())));
 
@@ -69,6 +72,28 @@ fn main() {
     });
 
     run_overlay(app_state, quit_flag, key_held, tray);
+}
+
+#[cfg(target_os = "windows")]
+fn apply_terminal_launch_preference(config: &Config) {
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
+
+    let console = unsafe { GetConsoleWindow() };
+    if console.is_null() {
+        return;
+    }
+
+    unsafe {
+        ShowWindow(
+            console,
+            if config.behavior.launch_without_terminal {
+                SW_HIDE
+            } else {
+                SW_SHOW
+            },
+        );
+    }
 }
 
 async fn run_background_loop(

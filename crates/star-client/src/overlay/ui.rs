@@ -528,27 +528,34 @@ fn title_bar(
     match_context: Option<&MatchContext>,
     config: &Config,
 ) {
+    let row_height = theme::header_font().size.max(theme::small_font().size);
     ui.horizontal(|ui| {
+        ui.set_width(ui.max_rect().width());
         render_title_star_label(ui);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(state.to_string())
-                    .font(theme::small_font())
-                    .color(state_color(state)),
-            );
-            if config.features.server_id {
-                if let Some(server_id) = match_context
-                    .map(|context| context.server_id.as_str())
-                    .filter(|server_id| !server_id.is_empty())
-                {
-                    ui.label(
-                        RichText::new(format_server_id(server_id))
-                            .font(theme::small_font())
-                            .color(theme::TEXT_MUTED),
-                    );
+        let remaining_width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            Vec2::new(remaining_width, row_height),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.label(
+                    RichText::new(state.to_string())
+                        .font(theme::small_font())
+                        .color(state_color(state)),
+                );
+                if config.features.server_id {
+                    if let Some(server_id) = match_context
+                        .map(|context| context.server_id.as_str())
+                        .filter(|server_id| !server_id.is_empty())
+                    {
+                        ui.label(
+                            RichText::new(format_server_id(server_id))
+                                .font(theme::small_font())
+                                .color(theme::TEXT_MUTED),
+                        );
+                    }
                 }
-            }
-        });
+            },
+        );
     });
 }
 
@@ -561,7 +568,7 @@ fn header_row(
     skin_label: &str,
 ) {
     let origin = ui.cursor().min;
-    let full_w = ui.available_width();
+    let full_w = ui.max_rect().width();
     ui.painter().rect_filled(
         Rect::from_min_size(origin, Vec2::new(full_w, HDR_H)),
         2.0,
@@ -650,7 +657,7 @@ fn player_row(
         theme::ROW_BG_ENEMY
     };
     let origin = ui.cursor().min;
-    let full_w = ui.available_width();
+    let full_w = ui.max_rect().width();
     ui.painter().rect_filled(
         Rect::from_min_size(origin, Vec2::new(full_w, ROW_H)),
         2.0,
