@@ -21,8 +21,10 @@ const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
 const FRAME_INNER_MARGIN: f32 = 6.0;
 const RANK_CELL_GAP: f32 = 4.0;
 const OVERLAY_STAR_TEXTURE_SIZE: u32 = 64;
+const STAR_ICON_INSET: f32 = 0.75;
 const PLAYER_STAR_SIZE: f32 = 14.0;
 const TITLE_STAR_SIZE: f32 = 16.0;
+const TITLE_STAR_SLOT_SIZE: f32 = TITLE_STAR_SIZE + (STAR_ICON_INSET * 2.0);
 
 thread_local! {
     static STAR_ICON_TEXTURE: RefCell<Option<Option<egui::TextureHandle>>> = const { RefCell::new(None) };
@@ -66,10 +68,8 @@ pub fn render_overlay(
     let columns = &config.columns;
     let visible_players = visible_players(game_state, players);
     let layout = overlay_layout(ctx, game_state, visible_players, columns, config);
-    let y = 60.0;
-
     egui::Area::new(egui::Id::new("star_overlay"))
-        .anchor(Align2::CENTER_TOP, Vec2::new(0.0, y))
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .order(egui::Order::Foreground)
         .interactable(false)
         .show(ctx, |ui| {
@@ -835,10 +835,8 @@ fn player_row(
 
 fn render_title_star_label(ui: &mut Ui) {
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(TITLE_STAR_SIZE, TITLE_STAR_SIZE),
-            egui::Sense::hover(),
-        );
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::splat(TITLE_STAR_SLOT_SIZE), egui::Sense::hover());
         paint_star_icon(ui, rect, TITLE_STAR_SIZE);
         ui.add_space(4.0);
         ui.label(
@@ -850,16 +848,18 @@ fn render_title_star_label(ui: &mut Ui) {
 }
 
 fn paint_star_icon(ui: &mut Ui, rect: Rect, size: f32) {
+    let image_rect =
+        Rect::from_center_size(rect.center(), Vec2::splat(size)).shrink(STAR_ICON_INSET);
     if let Some(texture) = overlay_star_texture(ui.ctx()) {
-        let image_rect = Rect::from_center_size(rect.center(), Vec2::splat(size));
-        ui.put(
+        ui.painter().image(
+            texture.id(),
             image_rect,
-            egui::Image::from_texture((texture.id(), texture.size_vec2()))
-                .fit_to_exact_size(image_rect.size()),
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
         );
     } else {
         ui.painter().text(
-            rect.center(),
+            image_rect.center(),
             Align2::CENTER_CENTER,
             "★",
             theme::star_font(),
