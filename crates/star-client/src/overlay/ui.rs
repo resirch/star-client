@@ -23,8 +23,6 @@ const RANK_CELL_GAP: f32 = 4.0;
 const OVERLAY_STAR_TEXTURE_SIZE: u32 = 64;
 const STAR_ICON_INSET: f32 = 0.75;
 const PLAYER_STAR_SIZE: f32 = 14.0;
-const TITLE_STAR_SIZE: f32 = 16.0;
-const TITLE_STAR_SLOT_SIZE: f32 = TITLE_STAR_SIZE + (STAR_ICON_INSET * 2.0);
 
 thread_local! {
     static STAR_ICON_TEXTURE: RefCell<Option<Option<egui::TextureHandle>>> = const { RefCell::new(None) };
@@ -834,23 +832,22 @@ fn player_row(
 }
 
 fn render_title_star_label(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::splat(TITLE_STAR_SLOT_SIZE), egui::Sense::hover());
-        paint_star_icon(ui, rect, TITLE_STAR_SIZE);
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("STAR CLIENT")
-                .font(theme::header_font())
-                .color(theme::STAR_COLOR),
-        );
-    });
+    ui.label(
+        RichText::new("STAR CLIENT")
+            .font(theme::header_font())
+            .color(theme::STAR_COLOR),
+    );
 }
 
 fn paint_star_icon(ui: &mut Ui, rect: Rect, size: f32) {
-    let image_rect =
-        Rect::from_center_size(rect.center(), Vec2::splat(size)).shrink(STAR_ICON_INSET);
+    let available_size = Vec2::splat(size).min(rect.shrink(STAR_ICON_INSET).size());
     if let Some(texture) = overlay_star_texture(ui.ctx()) {
+        let texture_size = texture.size_vec2();
+        let scale = (available_size.x / texture_size.x)
+            .min(available_size.y / texture_size.y)
+            .max(0.0);
+        let image_size = texture_size * scale;
+        let image_rect = Rect::from_center_size(rect.center(), image_size);
         ui.painter().image(
             texture.id(),
             image_rect,
@@ -858,6 +855,7 @@ fn paint_star_icon(ui: &mut Ui, rect: Rect, size: f32) {
             Color32::WHITE,
         );
     } else {
+        let image_rect = Rect::from_center_size(rect.center(), available_size);
         ui.painter().text(
             image_rect.center(),
             Align2::CENTER_CENTER,
