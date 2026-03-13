@@ -19,6 +19,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const STARTUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(target_os = "windows")]
+const DETACHED_LAUNCH_ENV: &str = "STAR_CLIENT_DETACHED";
 
 fn main() {
     tracing_subscriber::fmt()
@@ -34,6 +36,11 @@ fn main() {
         tracing::error!("Failed to load config: {}", e);
         Config::default()
     });
+
+    #[cfg(target_os = "windows")]
+    if relaunch_without_terminal_if_needed(&config) {
+        return;
+    }
 
     #[cfg(target_os = "windows")]
     apply_terminal_launch_preference(&config);
@@ -75,12 +82,63 @@ fn main() {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_terminal_launch_preference(config: &Config) {
+fn relaunch_without_terminal_if_needed(config: &Config) -> bool {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
     use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    if !config.behavior.launch_without_terminal
+        || std::env::var_os(DETACHED_LAUNCH_ENV).is_some()
+    {
+        return false;
+    }
+
+    let console = unsafe { GetConsoleWindow() };
+    if console.is_null() {
+        return false;
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            tracing::warn!("Failed to determine current executable for relaunch: {}", error);
+            return false;
+        }
+    };
+
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(std::env::args_os().skip(1))
+        .env(DETACHED_LAUNCH_ENV, "1")
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    match command.spawn() {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!("Failed to relaunch without terminal: {}", error);
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_terminal_launch_preference(config: &Config) {
+    use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
 
     let console = unsafe { GetConsoleWindow() };
     if console.is_null() {
+        return;
+    }
+
+    let mut process_ids = [0u32; 8];
+    let attached_processes =
+        unsafe { GetConsoleProcessList(process_ids.as_mut_ptr(), process_ids.len() as u32) };
+    if attached_processes > 1 {
         return;
     }
 

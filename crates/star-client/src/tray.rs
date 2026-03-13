@@ -620,7 +620,7 @@ fn terminal_menu_label(config: &Config) -> &'static str {
 #[cfg(target_os = "windows")]
 fn relaunch_current_process(launch_without_terminal: bool) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
@@ -628,7 +628,7 @@ fn relaunch_current_process(launch_without_terminal: bool) -> anyhow::Result<()>
 
     if launch_without_terminal {
         command
-            .creation_flags(DETACHED_PROCESS)
+            .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

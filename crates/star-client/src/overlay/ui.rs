@@ -185,7 +185,14 @@ fn overlay_layout(
     let show_leaderboard = leaderboard_column_visible(config, players);
     let show_skin = skin_column_visible(columns, game_state);
     let widths = measure_column_widths(ctx, players, config, show_leaderboard, show_skin);
-    let frame_width = table_width(columns, widths, config, show_leaderboard, show_skin);
+    let frame_width = table_width(
+        columns,
+        widths,
+        config,
+        show_leaderboard,
+        show_skin,
+        ctx.style().spacing.item_spacing.x,
+    );
 
     OverlayLayout {
         widths,
@@ -201,40 +208,52 @@ fn table_width(
     config: &Config,
     show_leaderboard: bool,
     show_skin: bool,
+    item_spacing_x: f32,
 ) -> f32 {
     let mut width = widths.party + widths.star + widths.agent + widths.name + widths.rank;
+    let mut column_count: usize = 5;
     if rr_column_visible(config) {
         width += widths.rr;
+        column_count += 1;
     }
     if columns.previous_rank {
         width += widths.previous_rank;
+        column_count += 1;
     }
     if columns.peak_rank {
         width += widths.peak_rank;
+        column_count += 1;
     }
     if show_leaderboard {
         width += widths.leaderboard;
+        column_count += 1;
     }
     if columns.kd {
         width += widths.kd;
+        column_count += 1;
     }
     if columns.headshot_percent {
         width += widths.headshot_percent;
+        column_count += 1;
     }
     if columns.winrate {
         width += widths.winrate;
+        column_count += 1;
     }
     if columns.earned_rr {
         width += widths.earned_rr;
+        column_count += 1;
     }
     if columns.level {
         width += widths.level;
+        column_count += 1;
     }
     if show_skin {
         width += widths.skin;
+        column_count += 1;
     }
 
-    width
+    width + item_spacing_x * (column_count.saturating_sub(1) as f32)
 }
 
 fn measure_column_widths(
