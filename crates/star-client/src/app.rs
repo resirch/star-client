@@ -153,7 +153,7 @@ pub async fn run_data_loop(
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
-        let should_fetch_menu_party = matches!(new_state, GameState::Menu);
+        let should_fetch_menu_party = should_fetch_menu_party(state_changed, &new_state);
 
         if is_new_match
             || (state_changed && !match_id.is_empty())
@@ -575,11 +575,15 @@ fn stabilize_game_state(
     detected_state
 }
 
+fn should_fetch_menu_party(state_changed: bool, game_state: &GameState) -> bool {
+    state_changed && matches!(game_state, GameState::Menu)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        hydrate_player_history, merge_pregame_players, should_refresh_encounter_identity,
-        stabilize_game_state, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+        hydrate_player_history, merge_pregame_players, should_fetch_menu_party,
+        should_refresh_encounter_identity, stabilize_game_state, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::EncounterRecord;
     use crate::game::state::GameState;
@@ -772,5 +776,12 @@ mod tests {
             GameState::Menu
         );
         assert_eq!(waiting_polls, 0);
+    }
+
+    #[test]
+    fn fetches_menu_party_only_when_entering_menu() {
+        assert!(should_fetch_menu_party(true, &GameState::Menu));
+        assert!(!should_fetch_menu_party(false, &GameState::Menu));
+        assert!(!should_fetch_menu_party(true, &GameState::WaitingForClient));
     }
 }
