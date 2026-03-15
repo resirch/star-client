@@ -1,4 +1,4 @@
-use super::{endpoints, types::*};
+use super::{auth, endpoints, lockfile, types::*};
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -34,6 +34,30 @@ impl RiotApiClient {
 
     pub fn puuid(&self) -> &str {
         &self.auth.puuid
+    }
+
+    pub async fn refresh_auth_from_lockfile(&mut self) -> Result<bool> {
+        let lockfile_data = lockfile::read_lockfile()?;
+        let refreshed_auth = auth::authenticate(&lockfile_data).await?;
+        Ok(self.apply_auth(refreshed_auth))
+    }
+
+    fn apply_auth(&mut self, next_auth: RiotAuth) -> bool {
+        let changed = self.auth.puuid != next_auth.puuid
+            || self.auth.lockfile.port != next_auth.lockfile.port
+            || self.auth.lockfile.password != next_auth.lockfile.password
+            || self.auth.lockfile.protocol != next_auth.lockfile.protocol
+            || self.auth.access_token != next_auth.access_token
+            || self.auth.entitlements_token != next_auth.entitlements_token
+            || self.auth.region != next_auth.region
+            || self.auth.shard != next_auth.shard;
+
+        if changed {
+            self.auth = next_auth;
+            self.content_cache = None;
+        }
+
+        changed
     }
 
     fn riot_headers(&self) -> reqwest::header::HeaderMap {
@@ -85,20 +109,26 @@ impl RiotApiClient {
         Ok(resp.presences)
     }
 
-    pub async fn get_self_presence(&self) -> Result<Option<PrivatePresence>> {
+    pub async fn get_valorant_presences(&self) -> Result<Vec<(Puuid, PrivatePresence)>> {
         let presences = self.get_presences().await?;
-        for p in presences {
-            if p.puuid == self.auth.puuid && p.product == "valorant" {
-                if let Some(priv_b64) = &p.private {
-                    let decoded = base64::Engine::decode(
-                        &base64::engine::general_purpose::STANDARD,
-                        priv_b64,
-                    )
-                    .unwrap_or_default();
-                    let parsed: PrivatePresence =
-                        serde_json::from_slice(&decoded).unwrap_or_default();
-                    return Ok(Some(parsed));
+        Ok(presences
+            .into_iter()
+            .filter_map(|presence| {
+                if presence.product != "valorant" {
+                    return None;
                 }
+
+                let private = decode_private_presence(presence.private.as_deref())?;
+                Some((presence.puuid, private))
+            })
+            .collect())
+    }
+
+    pub async fn get_self_presence(&self) -> Result<Option<PrivatePresence>> {
+        let presences = self.get_valorant_presences().await?;
+        for (puuid, presence) in presences {
+            if puuid == self.auth.puuid {
+                return Ok(Some(presence));
             }
         }
         Ok(None)
@@ -407,4 +437,11 @@ impl RiotApiClient {
     pub fn get_skin_level_info(&self, uuid: &str) -> Option<&SkinLevelInfo> {
         self.skin_cache.get(&uuid.to_lowercase())
     }
+}
+
+fn decode_private_presence(encoded: Option<&str>) -> Option<PrivatePresence> {
+    let encoded = encoded?;
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).ok()?;
+    serde_json::from_slice(&decoded).ok()
 }

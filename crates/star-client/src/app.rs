@@ -76,13 +76,18 @@ pub async fn run_data_loop(
         }
 
         let mut api_guard = api.write().await;
-        let detected_state = state::detect_game_state(&api_guard)
-            .await
-            .unwrap_or(GameState::Menu);
+        let detected_state = detect_game_state_with_reauth(&mut api_guard).await;
         let previous_state = {
             let state = app_state.read().await;
             state.game_state.clone()
         };
+        let current_puuid = api_guard.puuid().to_string();
+        {
+            let mut state = app_state.write().await;
+            if state.local_puuid != current_puuid {
+                state.local_puuid = current_puuid;
+            }
+        }
         let new_state = stabilize_game_state(
             &previous_state,
             detected_state,
@@ -148,9 +153,12 @@ pub async fn run_data_loop(
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
+        let should_fetch_menu_party = matches!(new_state, GameState::Menu);
+
         if is_new_match
             || (state_changed && !match_id.is_empty())
             || (overlay_weapon_changed && !match_id.is_empty())
+            || should_fetch_menu_party
         {
             // Phase 1: Fetch basic player info (names, agents, levels, teams)
             tracing::debug!(
@@ -172,6 +180,9 @@ pub async fn run_data_loop(
                         .await
                         .unwrap_or_default()
                 }
+                GameState::Menu => players::fetch_menu_party_players(&api_guard)
+                    .await
+                    .unwrap_or_default(),
                 _ => Vec::new(),
             };
 
@@ -179,7 +190,7 @@ pub async fn run_data_loop(
                 "Phase 1 complete: fetched {} basic players",
                 players_data.len()
             );
-            if config.behavior.party_finder && !players_data.is_empty() {
+            if config.behavior.party_finder && new_state.is_in_match() && !players_data.is_empty() {
                 party::detect_parties(&api_guard, &mut players_data).await;
             }
 
@@ -194,6 +205,19 @@ pub async fn run_data_loop(
             let existing_players_by_puuid: HashMap<String, PlayerDisplayData> = {
                 let state = app_state.read().await;
                 if state.last_match_id == match_id {
+                    state
+                        .players
+                        .iter()
+                        .cloned()
+                        .map(|player| (player.puuid.clone(), player))
+                        .collect()
+                } else {
+                    HashMap::new()
+                }
+            };
+            let previous_players_by_puuid: HashMap<String, PlayerDisplayData> = {
+                let state = app_state.read().await;
+                if state.last_match_id != match_id {
                     state
                         .players
                         .iter()
@@ -226,6 +250,10 @@ pub async fn run_data_loop(
                             &player.game_name,
                             &player.tag_line,
                             update_identity,
+                            previous_players_by_puuid
+                                .get(&player.puuid)
+                                .filter(|previous| previous.enriched)
+                                .map(|previous| previous.kd),
                         );
                         continue;
                     }
@@ -238,6 +266,7 @@ pub async fn run_data_loop(
                             &player.puuid,
                             &player.game_name,
                             &player.tag_line,
+                            None,
                         );
                     }
                 }
@@ -307,6 +336,16 @@ pub async fn run_data_loop(
                 if i < state.players.len() && state.players[i].puuid == player.puuid {
                     state.players[i] = player;
                 }
+                if let Some(history) = &history {
+                    if state.players[i].puuid != local_puuid && state.players[i].enriched {
+                        let _ = history.update_identity(
+                            &state.players[i].puuid,
+                            &state.players[i].game_name,
+                            &state.players[i].tag_line,
+                            Some(state.players[i].kd),
+                        );
+                    }
+                }
             }
 
             let enriched_count = {
@@ -331,6 +370,10 @@ pub async fn run_data_loop(
 
         // Phase 3: Re-enrich players that failed on previous attempts
         if !match_id.is_empty() {
+            let local_puuid = {
+                let state = app_state.read().await;
+                state.local_puuid.clone()
+            };
             let unenriched: Vec<(usize, String)> = {
                 let state = app_state.read().await;
                 if state.last_match_id != match_id {
@@ -376,6 +419,18 @@ pub async fn run_data_loop(
                     let mut state = app_state.write().await;
                     if *idx < state.players.len() && state.players[*idx].puuid == *puuid {
                         state.players[*idx] = player;
+                        if let Some(history) = &history {
+                            if state.players[*idx].puuid != local_puuid
+                                && state.players[*idx].enriched
+                            {
+                                let _ = history.update_identity(
+                                    &state.players[*idx].puuid,
+                                    &state.players[*idx].game_name,
+                                    &state.players[*idx].tag_line,
+                                    Some(state.players[*idx].kd),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -451,11 +506,13 @@ fn hydrate_player_history(
         player.last_seen_at = existing_player.last_seen_at.clone();
         player.last_seen_game_name = existing_player.last_seen_game_name.clone();
         player.last_seen_tag_line = existing_player.last_seen_tag_line.clone();
+        player.last_seen_kd = existing_player.last_seen_kd;
     } else if let Some(encounter) = encounter {
         player.times_seen_before = encounter.times_seen;
         player.last_seen_at = encounter.last_seen_at;
         player.last_seen_game_name = encounter.game_name;
         player.last_seen_tag_line = encounter.tag_line;
+        player.last_seen_kd = encounter.last_match_kd;
     }
 }
 
@@ -473,6 +530,29 @@ fn should_refresh_encounter_identity(
                 || existing_player.tag_line != player.tag_line
         }
         None => true,
+    }
+}
+
+async fn detect_game_state_with_reauth(api: &mut RiotApiClient) -> GameState {
+    let detected_state = state::detect_game_state(api)
+        .await
+        .unwrap_or(GameState::Menu);
+    if detected_state != GameState::WaitingForClient {
+        return detected_state;
+    }
+
+    match api.refresh_auth_from_lockfile().await {
+        Ok(true) => {
+            tracing::info!("Refreshed Riot client session after reconnect");
+            state::detect_game_state(api)
+                .await
+                .unwrap_or(GameState::Menu)
+        }
+        Ok(false) => detected_state,
+        Err(error) => {
+            tracing::debug!("Riot session refresh unavailable: {}", error);
+            detected_state
+        }
     }
 }
 
@@ -558,6 +638,7 @@ mod tests {
                 last_seen_at: "2026-03-08 12:00:00".into(),
                 last_seen_game_name: "Existing".into(),
                 last_seen_tag_line: "OLD".into(),
+                last_seen_kd: Some(1.24),
                 ..Default::default()
             },
         )]);
@@ -571,6 +652,7 @@ mod tests {
                 tag_line: "NEW".into(),
                 times_seen: 9,
                 last_seen_at: "2026-03-10 12:00:00".into(),
+                last_match_kd: Some(0.95),
             }),
         );
 
@@ -578,6 +660,7 @@ mod tests {
         assert_eq!(player.last_seen_at, "2026-03-08 12:00:00");
         assert_eq!(player.last_seen_game_name, "Existing");
         assert_eq!(player.last_seen_tag_line, "OLD");
+        assert_eq!(player.last_seen_kd, Some(1.24));
     }
 
     #[test]
@@ -596,6 +679,7 @@ mod tests {
                 tag_line: "TAG".into(),
                 times_seen: 3,
                 last_seen_at: "2026-03-07 12:00:00".into(),
+                last_match_kd: Some(1.11),
             }),
         );
 
@@ -603,6 +687,7 @@ mod tests {
         assert_eq!(player.last_seen_at, "2026-03-07 12:00:00");
         assert_eq!(player.last_seen_game_name, "Database");
         assert_eq!(player.last_seen_tag_line, "TAG");
+        assert_eq!(player.last_seen_kd, Some(1.11));
     }
 
     #[test]

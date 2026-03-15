@@ -88,9 +88,7 @@ fn relaunch_without_terminal_if_needed(config: &Config) -> bool {
     use windows_sys::Win32::System::Console::GetConsoleWindow;
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-    if !config.behavior.launch_without_terminal
-        || std::env::var_os(DETACHED_LAUNCH_ENV).is_some()
-    {
+    if !config.behavior.launch_without_terminal || std::env::var_os(DETACHED_LAUNCH_ENV).is_some() {
         return false;
     }
 
@@ -102,7 +100,10 @@ fn relaunch_without_terminal_if_needed(config: &Config) -> bool {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {
-            tracing::warn!("Failed to determine current executable for relaunch: {}", error);
+            tracing::warn!(
+                "Failed to determine current executable for relaunch: {}",
+                error
+            );
             return false;
         }
     };

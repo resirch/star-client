@@ -145,7 +145,7 @@ fn visible_players<'a>(
     game_state: &GameState,
     players: &'a [PlayerDisplayData],
 ) -> &'a [PlayerDisplayData] {
-    if game_state.is_in_match() {
+    if game_state.is_in_match() || matches!(game_state, GameState::Menu) {
         players
     } else {
         &[]
@@ -1429,9 +1429,14 @@ fn format_server_id(server_id: &str) -> String {
 }
 
 fn last_played_section(ui: &mut Ui, players: &[PlayerDisplayData], local_puuid: &str) {
+    let (local_party_id, local_party_number) = local_party_marker(players, local_puuid);
     let mut seen_before: Vec<_> = players
         .iter()
-        .filter(|player| player.puuid != local_puuid && player.times_seen_before > 0)
+        .filter(|player| {
+            player.puuid != local_puuid
+                && player.times_seen_before > 0
+                && !shares_local_party(player, local_party_id, local_party_number)
+        })
         .collect();
     if seen_before.is_empty() {
         return;
@@ -1464,6 +1469,26 @@ fn local_team_id<'a>(players: &'a [PlayerDisplayData], local_puuid: &str) -> &'a
         .or_else(|| players.first())
         .map(|player| player.team_id.as_str())
         .unwrap_or("")
+}
+
+fn local_party_marker<'a>(players: &'a [PlayerDisplayData], local_puuid: &str) -> (&'a str, i32) {
+    players
+        .iter()
+        .find(|player| player.puuid == local_puuid)
+        .map(|player| (player.party_id.as_str(), player.party_number))
+        .unwrap_or(("", 0))
+}
+
+fn shares_local_party(
+    player: &PlayerDisplayData,
+    local_party_id: &str,
+    local_party_number: i32,
+) -> bool {
+    if !local_party_id.is_empty() {
+        player.party_id == local_party_id
+    } else {
+        local_party_number > 0 && player.party_number == local_party_number
+    }
 }
 
 fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String {
@@ -1502,11 +1527,17 @@ fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String
     } else {
         format!("({times_seen} times)")
     };
+    let kd_suffix = player
+        .last_seen_kd
+        .map(|kd| format!(" KD {:.2}", kd))
+        .unwrap_or_default();
 
     if let Some(previous_identity) = previous_identity {
-        format!("Last seen {identity} (previously {previous_identity}){age} {seen_count}")
+        format!(
+            "Last seen {identity} (previously {previous_identity}){age}{kd_suffix} {seen_count}"
+        )
     } else {
-        format!("Last seen {identity}{age} {seen_count}")
+        format!("Last seen {identity}{age}{kd_suffix} {seen_count}")
     }
 }
 
@@ -1635,7 +1666,8 @@ mod tests {
     use super::{
         earned_rr_column_value, format_last_seen_summary, format_rank_display, format_rank_name,
         format_rank_parts, format_server_id, format_skin_name, leaderboard_column_visible,
-        player_display_name, rr_column_visible, skin_column_visible, split_players_by_team,
+        local_party_marker, player_display_name, rr_column_visible, shares_local_party,
+        skin_column_visible, split_players_by_team,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1842,12 +1874,14 @@ mod tests {
             last_seen_at: "2026-03-09 12:00:00".into(),
             last_seen_game_name: "Example".into(),
             last_seen_tag_line: "TAG".into(),
+            last_seen_kd: Some(1.37),
             ..Default::default()
         };
 
         let summary = format_last_seen_summary(&player, "Blue");
 
         assert!(summary.contains("Last seen Jett on enemy team (previously Example#TAG)"));
+        assert!(summary.contains("KD 1.37"));
         assert!(summary.contains("(3 times)"));
         assert!(!summary.contains("HiddenCurrent#NOW"));
         assert!(!summary.contains("HiddenCurrent"));
@@ -1864,12 +1898,14 @@ mod tests {
             last_seen_at: "2026-03-09 12:00:00".into(),
             last_seen_game_name: "Example".into(),
             last_seen_tag_line: "TAG".into(),
+            last_seen_kd: Some(0.84),
             ..Default::default()
         };
 
         let summary = format_last_seen_summary(&player, "Blue");
 
         assert!(summary.contains("Last seen Current#NOW (previously Example#TAG)"));
+        assert!(summary.contains("KD 0.84"));
         assert!(summary.contains("(2 times)"));
         assert!(!summary.contains("your team"));
     }
@@ -1894,5 +1930,78 @@ mod tests {
         assert!(summary.contains("(1 time)"));
         assert!(!summary.contains("previously"));
         assert!(!summary.contains("Example#TAG"));
+    }
+
+    #[test]
+    fn last_seen_without_kd_omits_kd_suffix() {
+        let player = PlayerDisplayData {
+            game_name: "Current".into(),
+            tag_line: "NOW".into(),
+            team_id: "Blue".into(),
+            times_seen_before: 1,
+            last_seen_at: "2026-03-09 12:00:00".into(),
+            last_seen_game_name: "Example".into(),
+            last_seen_tag_line: "TAG".into(),
+            ..Default::default()
+        };
+
+        let summary = format_last_seen_summary(&player, "Blue");
+
+        assert!(!summary.contains("KD "));
+    }
+
+    #[test]
+    fn local_party_marker_prefers_exact_local_player() {
+        let players = vec![
+            PlayerDisplayData {
+                puuid: "other".into(),
+                party_id: "party_2".into(),
+                party_number: 2,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "local".into(),
+                party_id: "party_1".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+
+        let (party_id, party_number) = local_party_marker(&players, "local");
+
+        assert_eq!(party_id, "party_1");
+        assert_eq!(party_number, 1);
+    }
+
+    #[test]
+    fn shares_local_party_uses_party_id_when_available() {
+        let teammate = PlayerDisplayData {
+            party_id: "party_1".into(),
+            party_number: 2,
+            ..Default::default()
+        };
+        let outsider = PlayerDisplayData {
+            party_id: "party_2".into(),
+            party_number: 1,
+            ..Default::default()
+        };
+
+        assert!(shares_local_party(&teammate, "party_1", 1));
+        assert!(!shares_local_party(&outsider, "party_1", 1));
+    }
+
+    #[test]
+    fn shares_local_party_falls_back_to_party_number() {
+        let teammate = PlayerDisplayData {
+            party_number: 3,
+            ..Default::default()
+        };
+        let outsider = PlayerDisplayData {
+            party_number: 1,
+            ..Default::default()
+        };
+
+        assert!(shares_local_party(&teammate, "", 3));
+        assert!(!shares_local_party(&outsider, "", 3));
     }
 }

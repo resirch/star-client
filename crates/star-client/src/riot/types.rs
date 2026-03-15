@@ -492,6 +492,7 @@ pub struct PlayerDisplayData {
     pub last_seen_at: String,
     pub last_seen_game_name: String,
     pub last_seen_tag_line: String,
+    pub last_seen_kd: Option<f64>,
     #[serde(skip)]
     pub enriched: bool,
 }
