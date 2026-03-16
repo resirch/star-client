@@ -61,6 +61,8 @@ pub struct BehaviorConfig {
     pub party_finder: bool,
     #[serde(default = "bool_true")]
     pub discord_rpc: bool,
+    #[serde(default = "bool_true")]
+    pub auto_check_updates: bool,
     #[serde(default = "bool_false")]
     pub launch_without_terminal: bool,
 }
@@ -148,6 +150,7 @@ impl Default for BehaviorConfig {
             auto_hide_ingame: true,
             party_finder: true,
             discord_rpc: true,
+            auto_check_updates: true,
             launch_without_terminal: false,
         }
     }

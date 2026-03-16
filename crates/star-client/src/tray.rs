@@ -142,6 +142,13 @@ impl SystemTray {
             "Discord RPC",
             config.behavior.discord_rpc,
         )?;
+        append_check(
+            &behavior_menu,
+            &mut check_items,
+            "behavior.auto_check_updates",
+            "Auto Check Updates",
+            config.behavior.auto_check_updates,
+        )?;
 
         let features_menu = Submenu::new("Features", true);
         append_check(
@@ -477,6 +484,12 @@ fn handle_setting_event(app_state: &Arc<RwLock<AppState>>, id: &str) -> bool {
                 changed = true;
                 true
             }
+            "behavior.auto_check_updates" => {
+                state.config.behavior.auto_check_updates =
+                    !state.config.behavior.auto_check_updates;
+                changed = true;
+                true
+            }
             "features.last_played" => {
                 state.config.features.last_played = !state.config.features.last_played;
                 changed = true;
@@ -563,6 +576,7 @@ fn check_state_for_id(config: &Config, id: &str) -> Option<bool> {
         "behavior.auto_hide_ingame" => config.behavior.auto_hide_ingame,
         "behavior.party_finder" => config.behavior.party_finder,
         "behavior.discord_rpc" => config.behavior.discord_rpc,
+        "behavior.auto_check_updates" => config.behavior.auto_check_updates,
         "features.last_played" => config.features.last_played,
         "features.server_id" => config.features.server_id,
         "features.truncate_names" => config.features.truncate_names,

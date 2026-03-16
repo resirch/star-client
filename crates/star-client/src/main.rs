@@ -8,6 +8,7 @@ mod riot;
 mod star;
 mod stats;
 mod tray;
+mod updater;
 
 use app::AppState;
 use config::Config;
@@ -160,6 +161,10 @@ async fn run_background_loop(
     config: Config,
     quit_flag: Arc<AtomicBool>,
 ) {
+    if let Err(error) = updater::maybe_prompt_for_update(&app_state).await {
+        tracing::warn!("Auto update check failed: {}", error);
+    }
+
     loop {
         if quit_flag.load(Ordering::Relaxed) {
             return;

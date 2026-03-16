@@ -137,8 +137,21 @@ pub fn render_overlay(
                             last_played_section(ui, visible_players, local_puuid);
                         }
                     }
+
+                    version_footer(ui);
                 });
         });
+}
+
+fn version_footer(ui: &mut Ui) {
+    ui.add_space(6.0);
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.label(
+            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                .font(theme::small_regular_font())
+                .color(theme::TEXT_MUTED),
+        );
+    });
 }
 
 fn visible_players<'a>(

@@ -21,6 +21,7 @@ auto_show_pregame = true
 auto_hide_ingame = true
 party_finder = true
 discord_rpc = true
+auto_check_updates = true
 launch_without_terminal = false
 
 [features]
