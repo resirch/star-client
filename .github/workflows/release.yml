@@ -1,11 +1,11 @@
-name: Build Release
+name: Build Artifacts
 
 on:
   push:
     branches: ["*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-client:
@@ -46,29 +46,3 @@ jobs:
           name: star-backend-linux
           path: target/release/star-backend
 
-  release:
-    name: Create Release
-    needs: [build-client, build-backend]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Generate release tag
-        id: tag
-        run: echo "tag=build-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Build ${{ github.sha }}
-          body: "Automated build from commit ${{ github.sha }}"
-          draft: false
-          prerelease: true
-          files: |
-            artifacts/star-client-windows/star-client.exe
-            artifacts/star-backend-linux/star-backend
