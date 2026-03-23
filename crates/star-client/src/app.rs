@@ -363,7 +363,16 @@ pub async fn run_data_loop(
             {
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id && !state.players.is_empty() {
-                    merge_pregame_players(&mut state.players, refreshed_players);
+                    merge_live_players(&mut state.players, refreshed_players);
+                }
+            }
+        } else if let GameState::Ingame { match_id } = &new_state {
+            if let Ok(refreshed_players) =
+                players::fetch_coregame_players(&mut api_guard, match_id, &config).await
+            {
+                let mut state = app_state.write().await;
+                if state.last_match_id == *match_id && !state.players.is_empty() {
+                    merge_live_players(&mut state.players, refreshed_players);
                 }
             }
         }
@@ -458,7 +467,7 @@ pub async fn run_data_loop(
     }
 }
 
-fn merge_pregame_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<PlayerDisplayData>) {
+fn merge_live_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<PlayerDisplayData>) {
     let mut existing_by_puuid: HashMap<String, PlayerDisplayData> = existing
         .drain(..)
         .map(|player| (player.puuid.clone(), player))
@@ -476,10 +485,26 @@ fn merge_pregame_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<P
             if !latest.team_id.is_empty() {
                 current.team_id = latest.team_id;
             }
-            current.agent_name = latest.agent_name;
-            current.agent_icon = latest.agent_icon;
+            if !latest.agent_name.is_empty() {
+                current.agent_name = latest.agent_name;
+            }
+            if latest.agent_icon.is_some() {
+                current.agent_icon = latest.agent_icon;
+            }
             if latest.account_level > 0 {
                 current.account_level = latest.account_level;
+            }
+            if !latest.skin_name.is_empty() {
+                current.skin_name = latest.skin_name;
+                current.skin_level = latest.skin_level;
+                current.skin_level_total = latest.skin_level_total;
+                current.skin_color = latest.skin_color;
+            }
+            if !latest.party_id.is_empty() {
+                current.party_id = latest.party_id;
+            }
+            if latest.party_number > 0 {
+                current.party_number = latest.party_number;
             }
             current.is_incognito = latest.is_incognito;
             merged.push(current);
@@ -582,7 +607,7 @@ fn should_fetch_menu_party(state_changed: bool, game_state: &GameState) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{
-        hydrate_player_history, merge_pregame_players, should_fetch_menu_party,
+        hydrate_player_history, merge_live_players, should_fetch_menu_party,
         should_refresh_encounter_identity, stabilize_game_state, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::EncounterRecord;
@@ -591,7 +616,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn pregame_merge_updates_agent_name_without_dropping_enriched_fields() {
+    fn live_merge_updates_agent_name_without_dropping_enriched_fields() {
         let mut existing = vec![PlayerDisplayData {
             puuid: "player-1".into(),
             game_name: "OldName".into(),
@@ -616,7 +641,7 @@ mod tests {
             ..Default::default()
         }];
 
-        merge_pregame_players(&mut existing, refreshed);
+        merge_live_players(&mut existing, refreshed);
 
         assert_eq!(existing.len(), 1);
         assert_eq!(existing[0].game_name, "NewName");
@@ -625,6 +650,40 @@ mod tests {
         assert_eq!(existing[0].rr, 55);
         assert_eq!(existing[0].party_number, 2);
         assert!(existing[0].is_star_user);
+        assert!(existing[0].enriched);
+    }
+
+    #[test]
+    fn live_merge_updates_team_assignment_without_resetting_enrichment() {
+        let mut existing = vec![PlayerDisplayData {
+            puuid: "local-player".into(),
+            team_id: "Blue".into(),
+            skin_name: "Prime Vandal".into(),
+            skin_level: 4,
+            skin_level_total: 4,
+            party_id: "party-1".into(),
+            party_number: 1,
+            current_rank: 20,
+            rank_name: "Diamond 3".into(),
+            enriched: true,
+            ..Default::default()
+        }];
+
+        let refreshed = vec![PlayerDisplayData {
+            puuid: "local-player".into(),
+            team_id: "Red".into(),
+            skin_name: "Prime Vandal".into(),
+            skin_level: 4,
+            skin_level_total: 4,
+            ..Default::default()
+        }];
+
+        merge_live_players(&mut existing, refreshed);
+
+        assert_eq!(existing[0].team_id, "Red");
+        assert_eq!(existing[0].party_id, "party-1");
+        assert_eq!(existing[0].party_number, 1);
+        assert_eq!(existing[0].rank_name, "Diamond 3");
         assert!(existing[0].enriched);
     }
 
