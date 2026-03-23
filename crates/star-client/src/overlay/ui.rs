@@ -65,7 +65,16 @@ pub fn render_overlay(
 ) {
     let columns = &config.columns;
     let visible_players = visible_players(game_state, players);
-    let layout = overlay_layout(ctx, game_state, visible_players, columns, config);
+    let (local_party_id, local_party_number) = local_party_marker(visible_players, local_puuid);
+    let layout = overlay_layout(
+        ctx,
+        game_state,
+        visible_players,
+        columns,
+        config,
+        local_party_id,
+        local_party_number,
+    );
     egui::Area::new(egui::Id::new("star_overlay"))
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .order(egui::Order::Foreground)
@@ -110,6 +119,8 @@ pub fn render_overlay(
                                     p,
                                     config,
                                     layout.widths,
+                                    local_party_id,
+                                    local_party_number,
                                     true,
                                     layout.show_leaderboard,
                                     layout.show_skin,
@@ -126,6 +137,8 @@ pub fn render_overlay(
                                     p,
                                     config,
                                     layout.widths,
+                                    local_party_id,
+                                    local_party_number,
                                     false,
                                     layout.show_leaderboard,
                                     layout.show_skin,
@@ -194,10 +207,20 @@ fn overlay_layout(
     players: &[PlayerDisplayData],
     columns: &ColumnConfig,
     config: &Config,
+    local_party_id: &str,
+    local_party_number: i32,
 ) -> OverlayLayout {
     let show_leaderboard = leaderboard_column_visible(config, players);
     let show_skin = skin_column_visible(columns, game_state);
-    let widths = measure_column_widths(ctx, players, config, show_leaderboard, show_skin);
+    let widths = measure_column_widths(
+        ctx,
+        players,
+        config,
+        show_leaderboard,
+        show_skin,
+        local_party_id,
+        local_party_number,
+    );
     let frame_width = table_width(
         columns,
         widths,
@@ -275,6 +298,8 @@ fn measure_column_widths(
     config: &Config,
     show_leaderboard: bool,
     show_skin: bool,
+    local_party_id: &str,
+    local_party_number: i32,
 ) -> ColumnWidths {
     let header_font = theme::small_font();
     let body_font = theme::body_font();
@@ -296,9 +321,9 @@ fn measure_column_widths(
             "NAME",
             &header_font,
             &body_font,
-            players
-                .iter()
-                .map(|player| player_display_name(player, config)),
+            players.iter().map(|player| {
+                player_display_name(player, config, local_party_id, local_party_number)
+            }),
         ),
         rank: rank_column_width(ctx, players, config, &header_font, &body_font, &loading),
         rr: text_column_width(
@@ -678,6 +703,8 @@ fn player_row(
     p: &PlayerDisplayData,
     config: &Config,
     widths: ColumnWidths,
+    local_party_id: &str,
+    local_party_number: i32,
     is_ally: bool,
     show_leaderboard: bool,
     show_skin: bool,
@@ -726,7 +753,7 @@ fn player_row(
         );
 
         // Name
-        let display_name = player_display_name(p, config);
+        let display_name = player_display_name(p, config, local_party_id, local_party_number);
         text_cell(
             ui,
             &display_name,
@@ -1259,12 +1286,18 @@ fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
     format_rank_name(player.current_rank, config)
 }
 
-fn player_display_name(player: &PlayerDisplayData, config: &Config) -> String {
-    let name = if player.is_incognito {
-        "---".to_string()
-    } else {
-        format!("{}#{}", player.game_name, player.tag_line)
-    };
+fn player_display_name(
+    player: &PlayerDisplayData,
+    config: &Config,
+    local_party_id: &str,
+    local_party_number: i32,
+) -> String {
+    let name =
+        if player.is_incognito && !shares_local_party(player, local_party_id, local_party_number) {
+            "---".to_string()
+        } else {
+            format!("{}#{}", player.game_name, player.tag_line)
+        };
 
     if config.features.truncate_names {
         ellipsize(&name, 18)
@@ -1836,7 +1869,7 @@ mod tests {
             is_incognito: true,
             ..Default::default()
         };
-        assert_eq!(player_display_name(&private_player, &config), "---");
+        assert_eq!(player_display_name(&private_player, &config, "", 0), "---");
 
         let long_name_player = PlayerDisplayData {
             game_name: "VeryLongPlayerName".into(),
@@ -1844,8 +1877,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            player_display_name(&long_name_player, &config),
+            player_display_name(&long_name_player, &config, "", 0),
             "VeryLongPlayerN..."
+        );
+    }
+
+    #[test]
+    fn display_name_shows_incognito_party_member() {
+        let player = PlayerDisplayData {
+            game_name: "PartyMate".into(),
+            tag_line: "ALLY".into(),
+            party_id: "party_1".into(),
+            party_number: 2,
+            is_incognito: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            player_display_name(&player, &Config::default(), "party_1", 1),
+            "PartyMate#ALLY"
         );
     }
 

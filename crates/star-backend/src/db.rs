@@ -1,6 +1,8 @@
 use anyhow::Result;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
+const ACTIVE_USER_WINDOW_SQL: &str = "-5 minutes";
+
 pub async fn init_pool(database_url: &str) -> Result<SqlitePool> {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -61,8 +63,9 @@ pub async fn query_star_users(pool: &SqlitePool, puuids: &[String]) -> Result<Ve
     // Build a query with placeholders
     let placeholders: Vec<String> = (1..=puuids.len()).map(|i| format!("${}", i)).collect();
     let query_str = format!(
-        "SELECT puuid FROM users WHERE puuid IN ({}) AND last_heartbeat > datetime('now', '-7 days')",
-        placeholders.join(", ")
+        "SELECT puuid FROM users WHERE puuid IN ({}) AND last_heartbeat > datetime('now', '{}')",
+        placeholders.join(", "),
+        ACTIVE_USER_WINDOW_SQL
     );
 
     let mut query = sqlx::query_scalar::<_, String>(&query_str);
@@ -75,11 +78,11 @@ pub async fn query_star_users(pool: &SqlitePool, puuids: &[String]) -> Result<Ve
 }
 
 pub async fn count_active_users(pool: &SqlitePool) -> Result<i64> {
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM users WHERE last_heartbeat > datetime('now', '-5 minutes')",
-    )
-    .fetch_one(pool)
-    .await?;
+    let query_str = format!(
+        "SELECT COUNT(*) FROM users WHERE last_heartbeat > datetime('now', '{}')",
+        ACTIVE_USER_WINDOW_SQL
+    );
+    let count: (i64,) = sqlx::query_as(&query_str).fetch_one(pool).await?;
     Ok(count.0)
 }
 
@@ -89,4 +92,52 @@ pub async fn cleanup_stale(pool: &SqlitePool) -> Result<u64> {
             .execute(pool)
             .await?;
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> SqlitePool {
+        let db_path =
+            std::env::temp_dir().join(format!("star-backend-test-{}.db", uuid::Uuid::new_v4()));
+        let database_url = format!(
+            "sqlite:{}?mode=rwc",
+            db_path.to_string_lossy().replace('\\', "/")
+        );
+        init_pool(&database_url).await.expect("create test pool")
+    }
+
+    #[tokio::test]
+    async fn query_star_users_only_returns_recent_heartbeats() {
+        let pool = test_pool().await;
+
+        upsert_user(&pool, "active-puuid", "active-token", "1.0.0")
+            .await
+            .expect("insert active user");
+        upsert_user(&pool, "stale-puuid", "stale-token", "1.0.0")
+            .await
+            .expect("insert stale user");
+
+        sqlx::query(
+            "UPDATE users SET last_heartbeat = datetime('now', '-6 minutes') WHERE puuid = $1",
+        )
+        .bind("stale-puuid")
+        .execute(&pool)
+        .await
+        .expect("age stale user");
+
+        let star_users = query_star_users(
+            &pool,
+            &["active-puuid".to_string(), "stale-puuid".to_string()],
+        )
+        .await
+        .expect("query star users");
+
+        assert_eq!(star_users, vec!["active-puuid".to_string()]);
+        assert_eq!(
+            count_active_users(&pool).await.expect("count active users"),
+            1
+        );
+    }
 }
