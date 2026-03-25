@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::riot::api::RiotApiClient;
 use crate::riot::types::*;
+use crate::stats::performance::extract_player_performance;
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -232,7 +233,7 @@ pub async fn enrich_player(
         current_season.as_deref().unwrap_or("none")
     );
 
-    let mmr_ok = match api.get_mmr(&puuid).await {
+    let (mmr_ok, latest_comp_match_id) = match api.get_mmr(&puuid).await {
         Ok(mmr) => {
             let has_data = mmr.subject.is_some();
             if mmr.queue_skills.is_none() && has_data {
@@ -240,11 +241,16 @@ pub async fn enrich_player(
             }
             extract_rank_data(player, &mmr, current_season, season_lookup);
             extract_latest_comp_update(player, mmr.latest_competitive_update.as_ref());
-            has_data
+            (
+                has_data,
+                mmr.latest_competitive_update
+                    .as_ref()
+                    .and_then(|update| update.match_i_d.clone()),
+            )
         }
         Err(e) => {
             tracing::warn!("Failed to fetch MMR for {}: {}", short_id, e);
-            false
+            (false, None)
         }
     };
 
@@ -253,7 +259,13 @@ pub async fn enrich_player(
             if !player.has_comp_update {
                 extract_earned_rr(player, &updates);
             }
-            extract_performance_from_updates(player, api, &updates).await;
+            extract_performance_from_matches(
+                player,
+                api,
+                &updates,
+                latest_comp_match_id.as_deref(),
+            )
+            .await;
             true
         }
         Err(e) => {
@@ -448,33 +460,88 @@ fn earned_rr_from_update(update: &CompetitiveUpdate) -> Option<i32> {
     }
 }
 
-async fn extract_performance_from_updates(
+async fn extract_performance_from_matches(
     display: &mut PlayerDisplayData,
     api: &RiotApiClient,
     updates: &CompetitiveUpdatesResponse,
+    latest_comp_match_id: Option<&str>,
 ) {
-    if let Some(first) = updates.matches.first() {
-        if let Some(match_id) = &first.match_i_d {
-            if let Ok(details) = api.get_match_details(match_id).await {
-                for player in &details.players {
-                    if player.subject == display.puuid {
-                        if let Some(stats) = &player.stats {
-                            let kills = stats.kills.unwrap_or(0) as f64;
-                            let deaths = stats.deaths.unwrap_or(1).max(1) as f64;
-                            display.kd = (kills / deaths * 100.0).round() / 100.0;
-                        }
-                    }
-                }
-
-                let (hs, bs, ls) = aggregate_damage(&details, &display.puuid);
-                let total = hs + bs + ls;
-                if total > 0 {
-                    display.headshot_percent =
-                        (hs as f64 / total as f64 * 100.0 * 10.0).round() / 10.0;
-                }
-            }
-        }
+    let mut match_id = preferred_recent_match_id(latest_comp_match_id, updates, None);
+    if match_id.is_none() {
+        let history = api.get_match_history(&display.puuid).await.ok();
+        match_id = preferred_recent_match_id(latest_comp_match_id, updates, history.as_ref());
     }
+
+    let Some(match_id) = match_id else {
+        return;
+    };
+
+    if let Ok(details) = api.get_match_details(&match_id).await {
+        apply_match_performance(display, &details);
+    }
+}
+
+fn preferred_recent_match_id(
+    latest_comp_match_id: Option<&str>,
+    updates: &CompetitiveUpdatesResponse,
+    fallback_history: Option<&serde_json::Value>,
+) -> Option<String> {
+    latest_comp_match_id
+        .filter(|match_id| !match_id.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            updates
+                .matches
+                .iter()
+                .find_map(|update| update.match_i_d.as_deref())
+                .filter(|match_id| !match_id.is_empty())
+                .map(str::to_owned)
+        })
+        .or_else(|| fallback_history.and_then(latest_match_id_from_history))
+}
+
+fn latest_match_id_from_history(history: &serde_json::Value) -> Option<String> {
+    history
+        .get("History")?
+        .as_array()?
+        .iter()
+        .find_map(|entry| entry.get("MatchID")?.as_str())
+        .filter(|match_id| !match_id.is_empty())
+        .map(str::to_owned)
+}
+
+fn apply_match_performance(display: &mut PlayerDisplayData, details: &MatchDetailsResponse) {
+    if let Some(performance) = extract_player_performance(details, &display.puuid) {
+        display.kd = performance.kd;
+    }
+
+    let (hs, bs, ls) = aggregate_damage(details, &display.puuid);
+    let total = hs + bs + ls;
+    if total > 0 {
+        display.headshot_percent = (hs as f64 / total as f64 * 100.0 * 10.0).round() / 10.0;
+    }
+
+    if let Some(won) = player_won_match(details, &display.puuid) {
+        display.games = 1;
+        display.wins = i32::from(won);
+        display.winrate = if won { 100.0 } else { 0.0 };
+    }
+}
+
+fn player_won_match(details: &MatchDetailsResponse, puuid: &str) -> Option<bool> {
+    let team_id = details
+        .players
+        .iter()
+        .find(|player| player.subject == puuid)?
+        .team_id
+        .as_deref()?;
+
+    details
+        .teams
+        .as_ref()?
+        .iter()
+        .find(|team| team.team_id.eq_ignore_ascii_case(team_id))
+        .map(|team| team.won)
 }
 
 fn aggregate_damage(details: &MatchDetailsResponse, puuid: &str) -> (i32, i32, i32) {
@@ -582,12 +649,15 @@ fn standard_skin_name(weapon_name: &str) -> String {
 mod tests {
     use super::{
         apply_competitive_update, build_season_lookup, earned_rr_from_update,
-        extract_latest_comp_update, extract_rank_data, normalize_overlay_weapon, SeasonLookup,
+        extract_latest_comp_update, extract_rank_data, normalize_overlay_weapon, player_won_match,
+        preferred_recent_match_id, SeasonLookup,
     };
     use crate::riot::types::{
-        CompetitiveUpdate, ContentResponse, ContentSeason, MmrResponse, PlayerDisplayData,
+        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason,
+        MatchDetailsResponse, MatchInfo, MatchPlayer, MatchTeam, MmrResponse, PlayerDisplayData,
         QueueSkill, SeasonalInfo,
     };
+    use serde_json::json;
     use std::collections::HashMap;
 
     #[test]
@@ -801,5 +871,83 @@ mod tests {
 
         assert!(player.has_comp_update);
         assert_eq!(player.earned_rr, 19);
+    }
+
+    #[test]
+    fn preferred_recent_match_id_prefers_latest_comp_match() {
+        let updates = CompetitiveUpdatesResponse {
+            matches: vec![CompetitiveUpdate {
+                match_i_d: Some("comp-from-updates".into()),
+                ..Default::default()
+            }],
+            subject: None,
+        };
+        let history = json!({
+            "History": [
+                { "MatchID": "latest-overall" }
+            ]
+        });
+
+        let match_id =
+            preferred_recent_match_id(Some("latest-comp"), &updates, Some(&history)).unwrap();
+
+        assert_eq!(match_id, "latest-comp");
+    }
+
+    #[test]
+    fn preferred_recent_match_id_falls_back_to_latest_match_history() {
+        let updates = CompetitiveUpdatesResponse {
+            matches: Vec::new(),
+            subject: None,
+        };
+        let history = json!({
+            "History": [
+                { "MatchID": "latest-overall" }
+            ]
+        });
+
+        let match_id = preferred_recent_match_id(None, &updates, Some(&history)).unwrap();
+
+        assert_eq!(match_id, "latest-overall");
+    }
+
+    #[test]
+    fn player_won_match_uses_team_result() {
+        let details = MatchDetailsResponse {
+            match_info: MatchInfo {
+                match_id: "match-1".into(),
+                map_id: "map-1".into(),
+                game_mode: None,
+                queue_id: None,
+                season_id: None,
+            },
+            players: vec![MatchPlayer {
+                subject: "player-1".into(),
+                team_id: Some("Blue".into()),
+                character_id: None,
+                stats: None,
+                competitive_tier: None,
+                player_card: None,
+                player_title: None,
+                party_id: None,
+            }],
+            teams: Some(vec![
+                MatchTeam {
+                    team_id: "Blue".into(),
+                    won: true,
+                    rounds_played: None,
+                    rounds_won: None,
+                },
+                MatchTeam {
+                    team_id: "Red".into(),
+                    won: false,
+                    rounds_played: None,
+                    rounds_won: None,
+                },
+            ]),
+            round_results: None,
+        };
+
+        assert_eq!(player_won_match(&details, "player-1"), Some(true));
     }
 }
