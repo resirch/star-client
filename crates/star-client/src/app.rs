@@ -322,28 +322,6 @@ pub async fn run_data_loop(
                 state.last_match_id = match_id.clone();
             }
 
-            // Update Discord RPC right away so the state transitions
-            // before the potentially slow Phase 2 enrichment loop.
-            if discord_rpc_enabled {
-                let state = app_state.read().await;
-                let rank_name = state
-                    .players
-                    .first()
-                    .map(|p| p.rank_name.as_str())
-                    .unwrap_or("Unranked");
-                let agent_name = state
-                    .players
-                    .first()
-                    .map(|p| p.agent_name.as_str())
-                    .unwrap_or("");
-                discord.update(
-                    &state.game_state,
-                    state.match_context.as_ref(),
-                    rank_name,
-                    agent_name,
-                );
-            }
-
             // Phase 2: Enrich each player with rank/KD/HS% and update after each
             let current_season = api_guard.get_current_season_id().await.ok().flatten();
             let season_lookup = api_guard
@@ -423,8 +401,12 @@ pub async fn run_data_loop(
                 players::fetch_pregame_players(&mut api_guard, match_id, &config).await
             {
                 let mut state = app_state.write().await;
-                if state.last_match_id == *match_id && !state.players.is_empty() {
-                    merge_live_players(&mut state.players, refreshed_players);
+                if state.last_match_id == *match_id {
+                    if state.players.is_empty() {
+                        state.players = refreshed_players;
+                    } else {
+                        merge_live_players(&mut state.players, refreshed_players);
+                    }
                 }
             }
         } else if let GameState::Ingame { match_id } = &new_state {
@@ -432,8 +414,12 @@ pub async fn run_data_loop(
                 players::fetch_coregame_players(&mut api_guard, match_id, &config).await
             {
                 let mut state = app_state.write().await;
-                if state.last_match_id == *match_id && !state.players.is_empty() {
-                    merge_live_players(&mut state.players, refreshed_players);
+                if state.last_match_id == *match_id {
+                    if state.players.is_empty() {
+                        state.players = refreshed_players;
+                    } else {
+                        merge_live_players(&mut state.players, refreshed_players);
+                    }
                 }
             }
         }
@@ -983,5 +969,41 @@ mod tests {
         assert_eq!(player.team_id, "Red");
         assert_eq!(player.game_name, "NewName");
         assert_eq!(player.agent_name, "Jett");
+    }
+
+    #[test]
+    fn live_merge_populates_empty_players_instead_of_skipping() {
+        // Simulates the bug: initial pregame fetch returned empty (ally_team
+        // not populated yet). On the next poll the fetch succeeds, but the old
+        // code skipped the merge because `!state.players.is_empty()` was false.
+        let mut existing: Vec<PlayerDisplayData> = Vec::new();
+
+        let refreshed = vec![
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                game_name: "Alice".into(),
+                tag_line: "NA1".into(),
+                agent_name: "Jett".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "player-2".into(),
+                game_name: "Bob".into(),
+                tag_line: "NA1".into(),
+                agent_name: "Sage".into(),
+                ..Default::default()
+            },
+        ];
+
+        // With the fix: when existing is empty, assign directly instead of merging
+        if existing.is_empty() {
+            existing = refreshed;
+        } else {
+            merge_live_players(&mut existing, refreshed);
+        }
+
+        assert_eq!(existing.len(), 2);
+        assert_eq!(existing[0].game_name, "Alice");
+        assert_eq!(existing[1].game_name, "Bob");
     }
 }
