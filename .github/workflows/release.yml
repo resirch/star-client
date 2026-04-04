@@ -27,22 +27,4 @@ jobs:
           name: star-client-windows
           path: target/release/star-client.exe
 
-  build-backend:
-    name: Build star-backend (Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build star-backend
-        run: cargo build --release --package star-backend
-
-      - name: Upload star-backend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: star-backend-linux
-          path: target/release/star-backend
 

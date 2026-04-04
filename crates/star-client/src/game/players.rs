@@ -156,6 +156,41 @@ pub async fn fetch_coregame_players(
     Ok(players)
 }
 
+/// Marks players that share the local player's party using chat presences.
+/// This ensures incognito party members have their `party_id` set so the
+/// overlay can reveal their names (matching in-game behaviour).
+pub async fn mark_party_from_presences(
+    api: &RiotApiClient,
+    players: &mut [PlayerDisplayData],
+) {
+    let presences = match api.get_valorant_presences().await {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let local_puuid = api.puuid();
+    let Some((_, local_presence)) = presences.iter().find(|(puuid, _)| puuid == local_puuid)
+    else {
+        return;
+    };
+
+    if local_presence.party_id.is_empty() || local_presence.party_size <= 1 {
+        return;
+    }
+
+    let party_puuids: std::collections::HashSet<&str> = presences
+        .iter()
+        .filter(|(_, presence)| presence.party_id == local_presence.party_id)
+        .map(|(puuid, _)| puuid.as_str())
+        .collect();
+
+    for player in players.iter_mut() {
+        if party_puuids.contains(player.puuid.as_str()) {
+            player.party_id = local_presence.party_id.clone();
+        }
+    }
+}
+
 pub async fn fetch_menu_party_players(api: &RiotApiClient) -> Result<Vec<PlayerDisplayData>> {
     let presences = api.get_valorant_presences().await?;
     let local_puuid = api.puuid();

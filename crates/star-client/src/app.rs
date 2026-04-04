@@ -212,8 +212,14 @@ pub async fn run_data_loop(
                 );
             }
 
-            if config.behavior.party_finder && new_state.is_in_match() && !players_data.is_empty() {
-                party::detect_parties(&api_guard, &mut players_data).await;
+            if new_state.is_in_match() && !players_data.is_empty() {
+                // Always mark party members from presences so incognito
+                // teammates have their names shown (matches in-game behaviour).
+                players::mark_party_from_presences(&api_guard, &mut players_data).await;
+
+                if config.behavior.party_finder {
+                    party::detect_parties(&api_guard, &mut players_data).await;
+                }
             }
 
             if config.star.enabled {
@@ -314,6 +320,28 @@ pub async fn run_data_loop(
                 state.players = players_data;
                 state.match_context = ctx;
                 state.last_match_id = match_id.clone();
+            }
+
+            // Update Discord RPC right away so the state transitions
+            // before the potentially slow Phase 2 enrichment loop.
+            if discord_rpc_enabled {
+                let state = app_state.read().await;
+                let rank_name = state
+                    .players
+                    .first()
+                    .map(|p| p.rank_name.as_str())
+                    .unwrap_or("Unranked");
+                let agent_name = state
+                    .players
+                    .first()
+                    .map(|p| p.agent_name.as_str())
+                    .unwrap_or("");
+                discord.update(
+                    &state.game_state,
+                    state.match_context.as_ref(),
+                    rank_name,
+                    agent_name,
+                );
             }
 
             // Phase 2: Enrich each player with rank/KD/HS% and update after each

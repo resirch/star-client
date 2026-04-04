@@ -53,6 +53,7 @@ struct OverlayLayout {
     show_leaderboard: bool,
     show_skin: bool,
     frame_width: f32,
+    frame_height: f32,
 }
 
 pub fn render_overlay(
@@ -72,6 +73,7 @@ pub fn render_overlay(
         visible_players,
         columns,
         config,
+        local_puuid,
         local_party_id,
         local_party_number,
     );
@@ -89,6 +91,7 @@ pub fn render_overlay(
                     ui.set_width(layout.frame_width);
                     ui.set_min_width(layout.frame_width);
                     ui.set_max_width(layout.frame_width);
+                    ui.set_max_height(layout.frame_height);
                     title_bar(ui, game_state, match_context, config);
                     if visible_players.is_empty() {
                         ui.add_space(6.0);
@@ -207,6 +210,7 @@ fn overlay_layout(
     players: &[PlayerDisplayData],
     columns: &ColumnConfig,
     config: &Config,
+    local_puuid: &str,
     local_party_id: &str,
     local_party_number: i32,
 ) -> OverlayLayout {
@@ -229,13 +233,93 @@ fn overlay_layout(
         show_skin,
         ctx.style().spacing.item_spacing.x,
     );
+    let frame_height =
+        compute_frame_height(ctx, players, local_puuid, config, local_party_id, local_party_number);
 
     OverlayLayout {
         widths,
         show_leaderboard,
         show_skin,
         frame_width,
+        frame_height,
     }
+}
+
+/// Compute the overlay content height so the frame shrinks to fit the rows.
+fn compute_frame_height(
+    ctx: &egui::Context,
+    visible_players: &[PlayerDisplayData],
+    local_puuid: &str,
+    config: &Config,
+    local_party_id: &str,
+    local_party_number: i32,
+) -> f32 {
+    let sp = ctx.style().spacing.item_spacing.y;
+    let mut elements: Vec<f32> = Vec::new();
+
+    let header_row_h = ctx.fonts(|f| f.row_height(&theme::header_font()));
+    let small_row_h = ctx.fonts(|f| f.row_height(&theme::small_font()));
+    let small_reg_row_h = ctx.fonts(|f| f.row_height(&theme::small_regular_font()));
+    let body_row_h = ctx.fonts(|f| f.row_height(&theme::body_font()));
+
+    // title_bar: horizontal layout whose height = max(header label, allocated row_height)
+    let title_alloc_h = theme::header_font().size.max(theme::small_font().size);
+    elements.push(header_row_h.max(title_alloc_h));
+
+    if visible_players.is_empty() {
+        elements.push(6.0); // add_space(6.0)
+        elements.push(body_row_h); // "No active match data"
+    } else {
+        elements.push(4.0); // add_space after title
+        elements.push(HDR_H); // header_row
+        elements.push(2.0); // add_space after header
+
+        let (allies, enemies) = split_players_by_team(visible_players, local_puuid);
+
+        if !allies.is_empty() {
+            elements.push(2.0); // team_label add_space(2.0)
+            elements.push(small_row_h); // team_label text
+            elements.push(1.0); // team_label add_space(1.0)
+            for _ in &allies {
+                elements.push(ROW_H);
+            }
+        }
+
+        if !enemies.is_empty() {
+            elements.push(6.0); // add_space(6.0) between teams
+            elements.push(2.0); // team_label add_space(2.0)
+            elements.push(small_row_h); // team_label text
+            elements.push(1.0); // team_label add_space(1.0)
+            for _ in &enemies {
+                elements.push(ROW_H);
+            }
+        }
+
+        if config.features.last_played {
+            let seen_count = visible_players
+                .iter()
+                .filter(|p| {
+                    p.puuid != local_puuid
+                        && p.times_seen_before > 0
+                        && !shares_local_party(p, local_party_id, local_party_number)
+                })
+                .count();
+            if seen_count > 0 {
+                elements.push(8.0); // add_space(8.0)
+                elements.push(small_reg_row_h); // "LAST SEEN" label
+                for _ in 0..seen_count {
+                    elements.push(small_reg_row_h);
+                }
+            }
+        }
+    }
+
+    // version_footer
+    elements.push(6.0); // add_space(6.0)
+    elements.push(small_reg_row_h); // version label
+
+    let sum: f32 = elements.iter().sum();
+    sum + (elements.len().saturating_sub(1) as f32) * sp
 }
 
 fn table_width(
