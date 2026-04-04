@@ -190,6 +190,28 @@ pub async fn run_data_loop(
                 "Phase 1 complete: fetched {} basic players",
                 players_data.len()
             );
+
+            // Carry over enriched data when transitioning from pregame to ingame
+            // (same game, different match_id — no need to re-fetch ranks/stats)
+            if is_new_match && matches!(previous_state, GameState::Pregame { .. }) {
+                let state = app_state.read().await;
+                let enriched_by_puuid: HashMap<String, &PlayerDisplayData> = state
+                    .players
+                    .iter()
+                    .filter(|p| p.enriched)
+                    .map(|p| (p.puuid.clone(), p))
+                    .collect();
+                for player in &mut players_data {
+                    if let Some(prev) = enriched_by_puuid.get(&player.puuid) {
+                        carry_over_enrichment(player, prev);
+                    }
+                }
+                tracing::debug!(
+                    "Carried over enrichment for {} pregame players",
+                    enriched_by_puuid.len()
+                );
+            }
+
             if config.behavior.party_finder && new_state.is_in_match() && !players_data.is_empty() {
                 party::detect_parties(&api_guard, &mut players_data).await;
             }
@@ -321,6 +343,17 @@ pub async fn run_data_loop(
                 };
 
                 let short_id = &player.puuid[..8.min(player.puuid.len())];
+
+                if player.enriched {
+                    tracing::debug!(
+                        "Phase 2 skip [{} / {}]: {} already enriched",
+                        i + 1,
+                        player_count,
+                        short_id
+                    );
+                    continue;
+                }
+
                 tracing::debug!(
                     "Phase 2 enrich [{} / {}]: {} '{}#{}'",
                     i + 1,
@@ -600,6 +633,33 @@ fn stabilize_game_state(
     detected_state
 }
 
+fn carry_over_enrichment(player: &mut PlayerDisplayData, source: &PlayerDisplayData) {
+    player.current_rank = source.current_rank;
+    player.rank_name = source.rank_name.clone();
+    player.rr = source.rr;
+    player.leaderboard_position = source.leaderboard_position;
+    player.peak_rank = source.peak_rank;
+    player.peak_rank_name = source.peak_rank_name.clone();
+    player.previous_rank = source.previous_rank;
+    player.previous_rank_name = source.previous_rank_name.clone();
+    player.wins = source.wins;
+    player.games = source.games;
+    player.winrate = source.winrate;
+    player.current_act_games = source.current_act_games;
+    player.earned_rr = source.earned_rr;
+    player.has_comp_update = source.has_comp_update;
+    player.afk_penalty = source.afk_penalty;
+    player.kd = source.kd;
+    player.headshot_percent = source.headshot_percent;
+    player.is_star_user = source.is_star_user;
+    player.times_seen_before = source.times_seen_before;
+    player.last_seen_at = source.last_seen_at.clone();
+    player.last_seen_game_name = source.last_seen_game_name.clone();
+    player.last_seen_tag_line = source.last_seen_tag_line.clone();
+    player.last_seen_kd = source.last_seen_kd;
+    player.enriched = source.enriched;
+}
+
 fn should_fetch_menu_party(state_changed: bool, game_state: &GameState) -> bool {
     state_changed && matches!(game_state, GameState::Menu)
 }
@@ -607,8 +667,9 @@ fn should_fetch_menu_party(state_changed: bool, game_state: &GameState) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{
-        hydrate_player_history, merge_live_players, should_fetch_menu_party,
-        should_refresh_encounter_identity, stabilize_game_state, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+        carry_over_enrichment, hydrate_player_history, merge_live_players,
+        should_fetch_menu_party, should_refresh_encounter_identity, stabilize_game_state,
+        WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::EncounterRecord;
     use crate::game::state::GameState;
@@ -842,5 +903,57 @@ mod tests {
         assert!(should_fetch_menu_party(true, &GameState::Menu));
         assert!(!should_fetch_menu_party(false, &GameState::Menu));
         assert!(!should_fetch_menu_party(true, &GameState::WaitingForClient));
+    }
+
+    #[test]
+    fn carry_over_preserves_enriched_stats_with_new_team_id() {
+        let source = PlayerDisplayData {
+            puuid: "player-1".into(),
+            team_id: "Blue".into(),
+            current_rank: 21,
+            rank_name: "Ascendant 1".into(),
+            rr: 55,
+            peak_rank: 24,
+            peak_rank_name: "Immortal 1".into(),
+            previous_rank: 20,
+            previous_rank_name: "Diamond 3".into(),
+            kd: 1.32,
+            headshot_percent: 28.5,
+            winrate: 56.0,
+            wins: 28,
+            games: 50,
+            current_act_games: 20,
+            earned_rr: 18,
+            has_comp_update: true,
+            is_star_user: true,
+            enriched: true,
+            ..Default::default()
+        };
+
+        // Ingame player has a different team_id (sides swapped) and no enrichment
+        let mut player = PlayerDisplayData {
+            puuid: "player-1".into(),
+            game_name: "NewName".into(),
+            tag_line: "NA1".into(),
+            team_id: "Red".into(),
+            agent_name: "Jett".into(),
+            ..Default::default()
+        };
+
+        carry_over_enrichment(&mut player, &source);
+
+        // Enriched stats carried over
+        assert!(player.enriched);
+        assert_eq!(player.current_rank, 21);
+        assert_eq!(player.rank_name, "Ascendant 1");
+        assert_eq!(player.rr, 55);
+        assert_eq!(player.kd, 1.32);
+        assert_eq!(player.headshot_percent, 28.5);
+        assert!(player.is_star_user);
+
+        // Basic fields from Phase 1 preserved (not overwritten)
+        assert_eq!(player.team_id, "Red");
+        assert_eq!(player.game_name, "NewName");
+        assert_eq!(player.agent_name, "Jett");
     }
 }

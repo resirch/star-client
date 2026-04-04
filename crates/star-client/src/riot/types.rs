@@ -475,6 +475,7 @@ pub struct PlayerDisplayData {
     pub winrate: f64,
     pub wins: i32,
     pub games: i32,
+    pub current_act_games: i32,
     pub earned_rr: i32,
     pub has_comp_update: bool,
     pub afk_penalty: i32,

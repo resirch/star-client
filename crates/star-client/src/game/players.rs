@@ -291,6 +291,14 @@ fn extract_rank_data(
         if let Some(comp) = skills.get("competitive") {
             if let Some(seasonal) = &comp.seasonal_info_by_season_i_d {
                 let season_ids = ordered_season_ids(seasonal, season_lookup);
+                let total_wins: i32 = seasonal
+                    .values()
+                    .map(|info| info.number_of_wins.unwrap_or(0))
+                    .sum();
+                let total_games: i32 = seasonal
+                    .values()
+                    .map(|info| info.number_of_games.unwrap_or(0))
+                    .sum();
 
                 // Current season rank
                 if let Some(season_id) = current_season {
@@ -299,12 +307,14 @@ fn extract_rank_data(
                         display.rank_name = rank_name(display.current_rank).to_string();
                         display.rr = info.ranking_in_tier.unwrap_or(0);
                         display.leaderboard_position = info.leaderboard_rank.unwrap_or(0);
-                        display.wins = info.number_of_wins.unwrap_or(0);
-                        display.games = info.number_of_games.unwrap_or(0);
-                        if display.games > 0 {
-                            display.winrate = (display.wins as f64 / display.games as f64) * 100.0;
-                        }
+                        display.current_act_games = info.number_of_games.unwrap_or(0);
                     }
+                }
+
+                display.wins = total_wins;
+                display.games = total_games;
+                if display.games > 0 {
+                    display.winrate = (display.wins as f64 / display.games as f64) * 100.0;
                 }
 
                 // Peak rank across all seasons
@@ -520,28 +530,6 @@ fn apply_match_performance(display: &mut PlayerDisplayData, details: &MatchDetai
     if total > 0 {
         display.headshot_percent = (hs as f64 / total as f64 * 100.0 * 10.0).round() / 10.0;
     }
-
-    if let Some(won) = player_won_match(details, &display.puuid) {
-        display.games = 1;
-        display.wins = i32::from(won);
-        display.winrate = if won { 100.0 } else { 0.0 };
-    }
-}
-
-fn player_won_match(details: &MatchDetailsResponse, puuid: &str) -> Option<bool> {
-    let team_id = details
-        .players
-        .iter()
-        .find(|player| player.subject == puuid)?
-        .team_id
-        .as_deref()?;
-
-    details
-        .teams
-        .as_ref()?
-        .iter()
-        .find(|team| team.team_id.eq_ignore_ascii_case(team_id))
-        .map(|team| team.won)
 }
 
 fn aggregate_damage(details: &MatchDetailsResponse, puuid: &str) -> (i32, i32, i32) {
@@ -649,13 +637,12 @@ fn standard_skin_name(weapon_name: &str) -> String {
 mod tests {
     use super::{
         apply_competitive_update, build_season_lookup, earned_rr_from_update,
-        extract_latest_comp_update, extract_rank_data, normalize_overlay_weapon, player_won_match,
+        extract_latest_comp_update, extract_rank_data, normalize_overlay_weapon,
         preferred_recent_match_id, SeasonLookup,
     };
     use crate::riot::types::{
-        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason,
-        MatchDetailsResponse, MatchInfo, MatchPlayer, MatchTeam, MmrResponse, PlayerDisplayData,
-        QueueSkill, SeasonalInfo,
+        CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason, MmrResponse,
+        PlayerDisplayData, QueueSkill, SeasonalInfo,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -711,6 +698,65 @@ mod tests {
 
         assert_eq!(player.peak_rank, 20);
         assert_eq!(player.previous_rank, 17);
+    }
+
+    #[test]
+    fn winrate_uses_total_comp_history_and_tracks_current_act_games() {
+        let mut seasonal = HashMap::new();
+        seasonal.insert(
+            "act-1".to_string(),
+            SeasonalInfo {
+                number_of_wins: Some(18),
+                number_of_games: Some(30),
+                competitive_tier: Some(17),
+                ..Default::default()
+            },
+        );
+        seasonal.insert(
+            "act-2".to_string(),
+            SeasonalInfo {
+                number_of_wins: Some(10),
+                number_of_games: Some(20),
+                competitive_tier: Some(20),
+                ..Default::default()
+            },
+        );
+
+        let mmr = MmrResponse {
+            queue_skills: Some(HashMap::from([(
+                "competitive".to_string(),
+                QueueSkill {
+                    seasonal_info_by_season_i_d: Some(seasonal),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+
+        let lookup = build_season_lookup(&ContentResponse {
+            seasons: Some(vec![
+                ContentSeason {
+                    i_d: Some("act-1".to_string()),
+                    name: Some("Episode 8 Act 3".to_string()),
+                    is_active: Some(false),
+                    season_type: Some("act".to_string()),
+                },
+                ContentSeason {
+                    i_d: Some("act-2".to_string()),
+                    name: Some("Episode 9 Act 1".to_string()),
+                    is_active: Some(true),
+                    season_type: Some("act".to_string()),
+                },
+            ]),
+        });
+
+        let mut player = PlayerDisplayData::default();
+        extract_rank_data(&mut player, &mmr, &Some("act-2".to_string()), &lookup);
+
+        assert_eq!(player.wins, 28);
+        assert_eq!(player.games, 50);
+        assert_eq!(player.current_act_games, 20);
+        assert!((player.winrate - 56.0).abs() < 1e-9);
     }
 
     #[test]
@@ -909,45 +955,5 @@ mod tests {
         let match_id = preferred_recent_match_id(None, &updates, Some(&history)).unwrap();
 
         assert_eq!(match_id, "latest-overall");
-    }
-
-    #[test]
-    fn player_won_match_uses_team_result() {
-        let details = MatchDetailsResponse {
-            match_info: MatchInfo {
-                match_id: "match-1".into(),
-                map_id: "map-1".into(),
-                game_mode: None,
-                queue_id: None,
-                season_id: None,
-            },
-            players: vec![MatchPlayer {
-                subject: "player-1".into(),
-                team_id: Some("Blue".into()),
-                character_id: None,
-                stats: None,
-                competitive_tier: None,
-                player_card: None,
-                player_title: None,
-                party_id: None,
-            }],
-            teams: Some(vec![
-                MatchTeam {
-                    team_id: "Blue".into(),
-                    won: true,
-                    rounds_played: None,
-                    rounds_won: None,
-                },
-                MatchTeam {
-                    team_id: "Red".into(),
-                    won: false,
-                    rounds_played: None,
-                    rounds_won: None,
-                },
-            ]),
-            round_results: None,
-        };
-
-        assert_eq!(player_won_match(&details, "player-1"), Some(true));
     }
 }

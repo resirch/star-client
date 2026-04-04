@@ -1350,7 +1350,7 @@ fn winrate_column_value(player: &PlayerDisplayData, loading: &str) -> String {
     if !player.enriched {
         loading.to_string()
     } else if player.games > 0 {
-        format!("{:.0}%", player.winrate)
+        format!("{:.0}% ({})", player.winrate, player.current_act_games)
     } else {
         "-".to_string()
     }
@@ -1713,7 +1713,7 @@ mod tests {
         earned_rr_column_value, format_last_seen_summary, format_rank_display, format_rank_name,
         format_rank_parts, format_server_id, format_skin_name, leaderboard_column_visible,
         local_party_marker, player_display_name, rr_column_visible, shares_local_party,
-        skin_column_visible, split_players_by_team,
+        skin_column_visible, split_players_by_team, winrate_column_value,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1923,6 +1923,20 @@ mod tests {
             earned_rr_column_value(&positive_player, loading),
             "+24 (-3)"
         );
+    }
+
+    #[test]
+    fn winrate_display_shows_total_percentage_and_current_act_games() {
+        let loading = "...";
+        let player = PlayerDisplayData {
+            enriched: true,
+            winrate: 56.0,
+            games: 50,
+            current_act_games: 10,
+            ..Default::default()
+        };
+
+        assert_eq!(winrate_column_value(&player, loading), "56% (10)");
     }
 
     #[test]
