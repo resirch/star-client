@@ -369,6 +369,7 @@ impl RiotApiClient {
         if !self.agent_cache.is_empty() {
             return Ok(());
         }
+        tracing::debug!("Fetching agent data from valorant-api.com");
         let resp: ValorantApiResponse<Vec<AgentData>> = self
             .http
             .get("https://valorant-api.com/v1/agents?isPlayableCharacter=true")
@@ -377,9 +378,12 @@ impl RiotApiClient {
             .json()
             .await?;
         if let Some(agents) = resp.data {
+            tracing::debug!("Loaded {} agents into cache", agents.len());
             for agent in agents {
                 self.agent_cache.insert(agent.uuid.to_lowercase(), agent);
             }
+        } else {
+            tracing::warn!("Agent API returned status {} but no data", resp.status);
         }
         Ok(())
     }
@@ -388,7 +392,20 @@ impl RiotApiClient {
         self.agent_cache
             .get(&uuid.to_lowercase())
             .map(|a| a.display_name.clone())
-            .unwrap_or_else(|| "Unknown".into())
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "Agent UUID {} not found in cache ({} agents cached)",
+                    uuid,
+                    self.agent_cache.len()
+                );
+                "Unknown".into()
+            })
+    }
+
+    pub fn get_agent_icon(&self, uuid: &str) -> Option<String> {
+        self.agent_cache
+            .get(&uuid.to_lowercase())
+            .and_then(|a| a.display_icon.clone())
     }
 
     pub async fn fetch_skin_levels(&mut self) -> Result<()> {

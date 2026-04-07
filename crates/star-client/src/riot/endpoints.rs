@@ -18,7 +18,7 @@ pub fn mmr(auth: &RiotAuth, puuid: &str) -> String {
 
 pub fn competitive_updates(auth: &RiotAuth, puuid: &str) -> String {
     format!(
-        "{}/mmr/v1/players/{}/competitiveupdates?startIndex=0&endIndex=10",
+        "{}/mmr/v1/players/{}/competitiveupdates?startIndex=0&endIndex=50",
         pd_base(auth),
         puuid
     )

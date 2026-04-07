@@ -57,7 +57,9 @@ pub async fn fetch_pregame_players(
 ) -> Result<Vec<PlayerDisplayData>> {
     tracing::debug!("Fetching pregame players for match_id={}", match_id);
     let pregame = api.get_pregame_match(match_id).await?;
-    api.fetch_agents().await.ok();
+    if let Err(e) = api.fetch_agents().await {
+        tracing::warn!("Failed to fetch agent data from valorant-api.com: {}", e);
+    }
     api.fetch_skin_levels().await.ok();
 
     let mut puuids: Vec<String> = Vec::new();
@@ -85,6 +87,7 @@ pub async fn fetch_pregame_players(
 
             if let Some(char_id) = &p.character_i_d {
                 display.agent_name = api.get_agent_name(char_id);
+                display.agent_icon = api.get_agent_icon(char_id);
             }
 
             display.team_id = team.team_i_d.clone().unwrap_or_default();
@@ -103,7 +106,9 @@ pub async fn fetch_coregame_players(
 ) -> Result<Vec<PlayerDisplayData>> {
     tracing::debug!("Fetching coregame players for match_id={}", match_id);
     let coregame = api.get_coregame_match(match_id).await?;
-    api.fetch_agents().await.ok();
+    if let Err(e) = api.fetch_agents().await {
+        tracing::warn!("Failed to fetch agent data from valorant-api.com: {}", e);
+    }
     api.fetch_skin_levels().await.ok();
 
     let puuids: Vec<String> = coregame.players.iter().map(|p| p.subject.clone()).collect();
@@ -137,6 +142,7 @@ pub async fn fetch_coregame_players(
 
         if let Some(char_id) = &p.character_i_d {
             display.agent_name = api.get_agent_name(char_id);
+            display.agent_icon = api.get_agent_icon(char_id);
         }
 
         display.team_id = p.team_i_d.clone().unwrap_or_default();
@@ -299,6 +305,7 @@ pub async fn enrich_player(
                 api,
                 &updates,
                 latest_comp_match_id.as_deref(),
+                current_season,
             )
             .await;
             true
@@ -510,7 +517,64 @@ async fn extract_performance_from_matches(
     api: &RiotApiClient,
     updates: &CompetitiveUpdatesResponse,
     latest_comp_match_id: Option<&str>,
+    current_season: &Option<String>,
 ) {
+    // Collect match IDs from the current act
+    let act_match_ids: Vec<String> = if let Some(season_id) = current_season {
+        updates
+            .matches
+            .iter()
+            .filter(|u| u.season_i_d.as_deref() == Some(season_id))
+            .filter_map(|u| u.match_i_d.clone())
+            .filter(|id| !id.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if !act_match_ids.is_empty() {
+        // Fetch match details for all current-act matches concurrently
+        let futs: Vec<_> = act_match_ids
+            .iter()
+            .map(|id| api.get_match_details(id))
+            .collect();
+        let results = futures_util::future::join_all(futs).await;
+
+        let mut total_kills = 0i32;
+        let mut total_deaths = 0i32;
+        let mut total_hs = 0i32;
+        let mut total_bs = 0i32;
+        let mut total_ls = 0i32;
+        let mut match_count = 0;
+
+        for result in results {
+            if let Ok(details) = result {
+                if let Some(perf) = extract_player_performance(&details, &display.puuid) {
+                    total_kills += perf.kills;
+                    total_deaths += perf.deaths;
+                    match_count += 1;
+                }
+                let (hs, bs, ls) = aggregate_damage(&details, &display.puuid);
+                total_hs += hs;
+                total_bs += bs;
+                total_ls += ls;
+            }
+        }
+
+        if match_count > 0 {
+            let deaths = total_deaths.max(1);
+            display.kd = (total_kills as f64 / deaths as f64 * 100.0).round() / 100.0;
+
+            let total_shots = total_hs + total_bs + total_ls;
+            if total_shots > 0 {
+                display.headshot_percent =
+                    (total_hs as f64 / total_shots as f64 * 100.0 * 10.0).round() / 10.0;
+            }
+            return;
+        }
+    }
+
+    // Fallback: use single most recent match if no act matches found
     let mut match_id = preferred_recent_match_id(latest_comp_match_id, updates, None);
     if match_id.is_none() {
         let history = api.get_match_history(&display.puuid).await.ok();
