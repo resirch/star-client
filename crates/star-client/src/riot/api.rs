@@ -190,10 +190,13 @@ impl RiotApiClient {
             .get(&url)
             .headers(self.riot_headers())
             .send()
-            .await?
-            .json()
             .await?;
-        Ok(resp)
+        let text = resp.text().await?;
+        let parsed: CompetitiveUpdatesResponse = serde_json::from_str(&text).map_err(|e| {
+            tracing::debug!("Competitive updates response body: {}", text);
+            e
+        })?;
+        Ok(parsed)
     }
 
     // --- Match Details ---

@@ -1,5 +1,8 @@
 use crate::db;
-use crate::types::*;
+use crate::types::{
+    DeregisterRequest, HeartbeatRequest, HealthResponse, QueryRequest, QueryResponse,
+    RegisterRequest, RegisterResponse,
+};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
@@ -43,6 +46,27 @@ pub async fn heartbeat(
         Ok(false) => StatusCode::NOT_FOUND,
         Err(e) => {
             tracing::error!("Heartbeat failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+pub async fn deregister(
+    State(pool): State<SqlitePool>,
+    Json(req): Json<DeregisterRequest>,
+) -> StatusCode {
+    if req.session_token.is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
+
+    match db::deregister(&pool, &req.session_token).await {
+        Ok(true) => {
+            tracing::info!("Deregistered session");
+            StatusCode::OK
+        }
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("Deregister failed: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }

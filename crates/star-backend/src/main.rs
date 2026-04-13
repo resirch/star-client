@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/register", post(routes::register))
         .route("/api/heartbeat", post(routes::heartbeat))
+        .route("/api/deregister", post(routes::deregister))
         .route("/api/query", post(routes::query))
         .route("/health", get(routes::health))
         .layer(CorsLayer::permissive())

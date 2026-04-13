@@ -216,10 +216,17 @@ async fn run_background_loop(
         app::run_data_loop(
             Arc::clone(&app_state),
             api,
-            star_client,
+            Arc::clone(&star_client),
             Arc::clone(&quit_flag),
         )
         .await;
+
+        // Deregister from star backend when the session ends
+        if config.star.enabled {
+            if let Err(e) = star_client.deregister().await {
+                tracing::warn!("Star deregistration failed: {}", e);
+            }
+        }
 
         if quit_flag.load(Ordering::Relaxed) {
             return;

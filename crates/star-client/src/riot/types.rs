@@ -134,9 +134,10 @@ pub struct CompetitiveUpdate {
 
 // --- Competitive Updates ---
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct CompetitiveUpdatesResponse {
+    #[serde(default)]
     pub matches: Vec<CompetitiveUpdate>,
     pub subject: Option<Puuid>,
 }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -20,6 +21,11 @@ pub struct HeartbeatRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeregisterRequest {
+    pub session_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
     pub puuids: Vec<String>,
 }
@@ -33,6 +39,7 @@ pub struct StarClient {
     http: reqwest::Client,
     backend_url: String,
     session_token: Arc<RwLock<Option<String>>>,
+    heartbeat_active: Arc<AtomicBool>,
 }
 
 impl StarClient {
@@ -41,6 +48,7 @@ impl StarClient {
             http: reqwest::Client::new(),
             backend_url: backend_url.trim_end_matches('/').to_string(),
             session_token: Arc::new(RwLock::new(None)),
+            heartbeat_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -78,6 +86,23 @@ impl StarClient {
         Ok(())
     }
 
+    pub async fn deregister(&self) -> Result<()> {
+        let token = self.session_token.write().await.take();
+        self.heartbeat_active.store(false, Ordering::Relaxed);
+        if let Some(token) = token {
+            let url = format!("{}/api/deregister", self.backend_url);
+            let _ = self
+                .http
+                .post(&url)
+                .json(&DeregisterRequest {
+                    session_token: token,
+                })
+                .send()
+                .await;
+        }
+        Ok(())
+    }
+
     pub async fn query(&self, puuids: &[String]) -> Result<Vec<String>> {
         let url = format!("{}/api/query", self.backend_url);
         let resp: QueryResponse = self
@@ -94,10 +119,15 @@ impl StarClient {
     }
 
     pub fn start_heartbeat_loop(self: &Arc<Self>) {
+        self.heartbeat_active.store(true, Ordering::Relaxed);
         let client = Arc::clone(self);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if !client.heartbeat_active.load(Ordering::Relaxed) {
+                    tracing::debug!("Heartbeat loop stopped");
+                    break;
+                }
                 if let Err(e) = client.heartbeat().await {
                     tracing::warn!("Heartbeat failed: {}", e);
                 }

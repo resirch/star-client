@@ -17,6 +17,11 @@ pub struct HeartbeatRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DeregisterRequest {
+    pub session_token: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct QueryRequest {
     pub puuids: Vec<String>,
 }

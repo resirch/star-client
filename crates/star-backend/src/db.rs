@@ -86,6 +86,14 @@ pub async fn count_active_users(pool: &SqlitePool) -> Result<i64> {
     Ok(count.0)
 }
 
+pub async fn deregister(pool: &SqlitePool, session_token: &str) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM users WHERE session_token = $1")
+        .bind(session_token)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn cleanup_stale(pool: &SqlitePool) -> Result<u64> {
     let result =
         sqlx::query("DELETE FROM users WHERE last_heartbeat < datetime('now', '-30 days')")
@@ -106,6 +114,31 @@ mod tests {
             db_path.to_string_lossy().replace('\\', "/")
         );
         init_pool(&database_url).await.expect("create test pool")
+    }
+
+    #[tokio::test]
+    async fn deregister_removes_user_immediately() {
+        let pool = test_pool().await;
+
+        upsert_user(&pool, "player-puuid", "player-token", "1.0.0")
+            .await
+            .expect("insert user");
+
+        // User should be active
+        let star_users = query_star_users(&pool, &["player-puuid".to_string()])
+            .await
+            .expect("query");
+        assert_eq!(star_users, vec!["player-puuid".to_string()]);
+
+        // Deregister
+        let removed = deregister(&pool, "player-token").await.expect("deregister");
+        assert!(removed);
+
+        // User should no longer appear
+        let star_users = query_star_users(&pool, &["player-puuid".to_string()])
+            .await
+            .expect("query after deregister");
+        assert!(star_users.is_empty());
     }
 
     #[tokio::test]
