@@ -191,8 +191,32 @@ pub async fn run_data_loop(
                 players_data.len()
             );
 
+            let side_swap_only = {
+                let state = app_state.read().await;
+                is_ingame_match_id_change(&previous_state, &new_state)
+                    && !state.players.is_empty()
+                    && (players_data.is_empty()
+                        || same_player_roster(&state.players, &players_data))
+            };
+
+            if side_swap_only {
+                let ctx = match_data::fetch_coregame_context(&api_guard, &match_id)
+                    .await
+                    .ok();
+                let mut state = app_state.write().await;
+                merge_or_swap_side_change(&mut state.players, players_data);
+                if ctx.is_some() {
+                    state.match_context = ctx;
+                }
+                state.last_match_id = match_id.clone();
+                tracing::info!(
+                    "Detected in-game side swap; preserved enriched player data and updated team colors"
+                );
+                continue;
+            }
+
             // Carry over enriched data when transitioning from pregame to ingame
-            // (same game, different match_id — no need to re-fetch ranks/stats)
+            // (same game, different match_id; no need to re-fetch ranks/stats)
             if is_new_match && matches!(previous_state, GameState::Pregame { .. }) {
                 let state = app_state.read().await;
                 let enriched_by_puuid: HashMap<String, &PlayerDisplayData> = state
@@ -563,6 +587,66 @@ fn merge_live_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<Play
     *existing = merged;
 }
 
+fn merge_or_swap_side_change(
+    existing: &mut Vec<PlayerDisplayData>,
+    refreshed: Vec<PlayerDisplayData>,
+) {
+    if refreshed.is_empty() {
+        swap_team_colors(existing);
+        return;
+    }
+
+    let refreshed_has_team_changes = has_team_assignment_changes(existing, &refreshed);
+    merge_live_players(existing, refreshed);
+    if !refreshed_has_team_changes {
+        swap_team_colors(existing);
+    }
+}
+
+fn swap_team_colors(players: &mut [PlayerDisplayData]) {
+    for player in players {
+        if player.team_id.eq_ignore_ascii_case("red") {
+            player.team_id = "Blue".to_string();
+        } else if player.team_id.eq_ignore_ascii_case("blue") {
+            player.team_id = "Red".to_string();
+        }
+    }
+}
+
+fn same_player_roster(existing: &[PlayerDisplayData], refreshed: &[PlayerDisplayData]) -> bool {
+    if existing.len() != refreshed.len() {
+        return false;
+    }
+
+    let existing_by_puuid: HashMap<&str, ()> = existing
+        .iter()
+        .filter(|player| !player.puuid.is_empty())
+        .map(|player| (player.puuid.as_str(), ()))
+        .collect();
+
+    existing_by_puuid.len() == existing.len()
+        && refreshed
+            .iter()
+            .all(|player| existing_by_puuid.contains_key(player.puuid.as_str()))
+}
+
+fn has_team_assignment_changes(
+    existing: &[PlayerDisplayData],
+    refreshed: &[PlayerDisplayData],
+) -> bool {
+    let existing_by_puuid: HashMap<&str, &str> = existing
+        .iter()
+        .map(|player| (player.puuid.as_str(), player.team_id.as_str()))
+        .collect();
+
+    refreshed.iter().any(|player| {
+        !player.team_id.is_empty()
+            && existing_by_puuid
+                .get(player.puuid.as_str())
+                .is_some_and(|team_id| !player.team_id.eq_ignore_ascii_case(team_id))
+    })
+}
+
 fn hydrate_player_history(
     player: &mut PlayerDisplayData,
     local_puuid: &str,
@@ -633,9 +717,7 @@ fn stabilize_game_state(
     detected_state: GameState,
     waiting_for_client_polls: &mut u8,
 ) -> GameState {
-    if detected_state == GameState::WaitingForClient
-        && previous_state != &GameState::WaitingForClient
-    {
+    if should_debounce_detected_state(previous_state, &detected_state) {
         *waiting_for_client_polls = waiting_for_client_polls.saturating_add(1);
         if *waiting_for_client_polls < WAITING_FOR_CLIENT_DEBOUNCE_POLLS {
             return previous_state.clone();
@@ -645,6 +727,28 @@ fn stabilize_game_state(
     }
 
     detected_state
+}
+
+fn should_debounce_detected_state(previous_state: &GameState, detected_state: &GameState) -> bool {
+    (detected_state == &GameState::WaitingForClient
+        && previous_state != &GameState::WaitingForClient)
+        || (detected_state == &GameState::Menu && previous_state.is_in_match())
+}
+
+fn is_ingame_match_id_change(previous_state: &GameState, new_state: &GameState) -> bool {
+    matches!(
+        (previous_state, new_state),
+        (
+            GameState::Ingame {
+                match_id: previous_match_id
+            },
+            GameState::Ingame {
+                match_id: new_match_id
+            }
+        ) if !previous_match_id.is_empty()
+            && !new_match_id.is_empty()
+            && previous_match_id != new_match_id
+    )
 }
 
 fn carry_over_enrichment(player: &mut PlayerDisplayData, source: &PlayerDisplayData) {
@@ -681,8 +785,9 @@ fn should_fetch_menu_party(state_changed: bool, game_state: &GameState) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{
-        carry_over_enrichment, hydrate_player_history, merge_live_players,
-        should_fetch_menu_party, should_refresh_encounter_identity, stabilize_game_state,
+        carry_over_enrichment, hydrate_player_history, is_ingame_match_id_change,
+        merge_live_players, merge_or_swap_side_change, same_player_roster, should_fetch_menu_party,
+        should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
         WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::EncounterRecord;
@@ -906,10 +1011,44 @@ mod tests {
         let mut waiting_polls = 2;
 
         assert_eq!(
-            stabilize_game_state(&previous_state, GameState::Menu, &mut waiting_polls,),
-            GameState::Menu
+            stabilize_game_state(
+                &previous_state,
+                GameState::Ingame {
+                    match_id: "match-1".into()
+                },
+                &mut waiting_polls,
+            ),
+            previous_state
         );
         assert_eq!(waiting_polls, 0);
+    }
+
+    #[test]
+    fn ignores_transient_menu_while_in_match() {
+        let previous_state = GameState::Ingame {
+            match_id: "match-1".into(),
+        };
+        let mut waiting_polls = 0;
+
+        for _ in 0..WAITING_FOR_CLIENT_DEBOUNCE_POLLS - 1 {
+            assert_eq!(
+                stabilize_game_state(&previous_state, GameState::Menu, &mut waiting_polls),
+                previous_state
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_menu_after_debounce_threshold() {
+        let previous_state = GameState::Ingame {
+            match_id: "match-1".into(),
+        };
+        let mut waiting_polls = WAITING_FOR_CLIENT_DEBOUNCE_POLLS - 1;
+
+        assert_eq!(
+            stabilize_game_state(&previous_state, GameState::Menu, &mut waiting_polls),
+            GameState::Menu
+        );
     }
 
     #[test]
@@ -1005,5 +1144,133 @@ mod tests {
         assert_eq!(existing.len(), 2);
         assert_eq!(existing[0].game_name, "Alice");
         assert_eq!(existing[1].game_name, "Bob");
+    }
+
+    #[test]
+    fn detects_ingame_match_id_change() {
+        assert!(is_ingame_match_id_change(
+            &GameState::Ingame {
+                match_id: "first-half".into()
+            },
+            &GameState::Ingame {
+                match_id: "second-half".into()
+            },
+        ));
+        assert!(!is_ingame_match_id_change(
+            &GameState::Pregame {
+                match_id: "pregame".into()
+            },
+            &GameState::Ingame {
+                match_id: "coregame".into()
+            },
+        ));
+    }
+
+    #[test]
+    fn side_swap_uses_refreshed_team_assignments_when_available() {
+        let mut existing = vec![
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                team_id: "Blue".into(),
+                current_rank: 21,
+                rank_name: "Ascendant 1".into(),
+                enriched: true,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "player-2".into(),
+                team_id: "Red".into(),
+                current_rank: 18,
+                rank_name: "Diamond 1".into(),
+                enriched: true,
+                ..Default::default()
+            },
+        ];
+
+        let refreshed = vec![
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                team_id: "Red".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "player-2".into(),
+                team_id: "Blue".into(),
+                ..Default::default()
+            },
+        ];
+
+        assert!(same_player_roster(&existing, &refreshed));
+        merge_or_swap_side_change(&mut existing, refreshed);
+
+        assert_eq!(existing[0].team_id, "Red");
+        assert_eq!(existing[1].team_id, "Blue");
+        assert_eq!(existing[0].rank_name, "Ascendant 1");
+        assert!(existing[0].enriched);
+    }
+
+    #[test]
+    fn side_swap_flips_colors_when_refreshed_players_are_empty() {
+        let mut existing = vec![
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                team_id: "Blue".into(),
+                enriched: true,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "player-2".into(),
+                team_id: "Red".into(),
+                enriched: true,
+                ..Default::default()
+            },
+        ];
+
+        merge_or_swap_side_change(&mut existing, Vec::new());
+
+        assert_eq!(existing[0].team_id, "Red");
+        assert_eq!(existing[1].team_id, "Blue");
+        assert!(existing[0].enriched);
+        assert!(existing[1].enriched);
+    }
+
+    #[test]
+    fn side_swap_flips_colors_when_refreshed_teams_have_not_changed() {
+        let mut existing = vec![PlayerDisplayData {
+            puuid: "player-1".into(),
+            team_id: "Blue".into(),
+            enriched: true,
+            ..Default::default()
+        }];
+
+        let refreshed = vec![PlayerDisplayData {
+            puuid: "player-1".into(),
+            team_id: "Blue".into(),
+            ..Default::default()
+        }];
+
+        merge_or_swap_side_change(&mut existing, refreshed);
+
+        assert_eq!(existing[0].team_id, "Red");
+        assert!(existing[0].enriched);
+    }
+
+    #[test]
+    fn swap_team_colors_leaves_unknown_team_ids_alone() {
+        let mut players = vec![
+            PlayerDisplayData {
+                team_id: "Blue".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                team_id: "party".into(),
+                ..Default::default()
+            },
+        ];
+
+        swap_team_colors(&mut players);
+
+        assert_eq!(players[0].team_id, "Red");
+        assert_eq!(players[1].team_id, "party");
     }
 }
