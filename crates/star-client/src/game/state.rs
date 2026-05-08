@@ -30,16 +30,16 @@ impl GameState {
 pub async fn detect_game_state(api: &RiotApiClient) -> Result<GameState> {
     // Try pregame first (agent select)
     if let Ok(pregame) = api.get_pregame_player().await {
-        return Ok(GameState::Pregame {
-            match_id: pregame.match_i_d,
-        });
+        if let Some(match_id) = non_empty_match_id(&pregame.match_i_d) {
+            return Ok(GameState::Pregame { match_id });
+        }
     }
 
     // Try coregame (in match)
     if let Ok(coregame) = api.get_coregame_player().await {
-        return Ok(GameState::Ingame {
-            match_id: coregame.match_i_d,
-        });
+        if let Some(match_id) = non_empty_match_id(&coregame.match_i_d) {
+            return Ok(GameState::Ingame { match_id });
+        }
     }
 
     // Check presence to see if client is running
@@ -84,7 +84,7 @@ fn state_from_presence(
                 .or_else(|| non_empty_match_id(&presence.match_id))
                 .unwrap_or_default();
             if match_id.is_empty() {
-                GameState::Menu
+                GameState::WaitingForClient
             } else {
                 GameState::Pregame { match_id }
             }
@@ -94,7 +94,7 @@ fn state_from_presence(
                 .or_else(|| non_empty_match_id(&presence.match_id))
                 .unwrap_or_default();
             if match_id.is_empty() {
-                GameState::Menu
+                GameState::WaitingForClient
             } else {
                 GameState::Ingame { match_id }
             }
@@ -151,12 +151,28 @@ mod tests {
     }
 
     #[test]
-    fn ingame_presence_without_any_match_id_falls_back_to_menu() {
+    fn ingame_presence_without_any_match_id_waits_for_match_id() {
         let presence = PrivatePresence {
             session_loop_state: "ingame".into(),
             ..Default::default()
         };
 
-        assert_eq!(state_from_presence(&presence, None, None), GameState::Menu);
+        assert_eq!(
+            state_from_presence(&presence, None, None),
+            GameState::WaitingForClient
+        );
+    }
+
+    #[test]
+    fn pregame_presence_without_any_match_id_waits_for_match_id() {
+        let presence = PrivatePresence {
+            session_loop_state: "pregame".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            state_from_presence(&presence, None, None),
+            GameState::WaitingForClient
+        );
     }
 }

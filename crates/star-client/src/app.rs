@@ -9,6 +9,7 @@ use crate::riot::api::RiotApiClient;
 use crate::riot::types::PlayerDisplayData;
 use crate::star::client::StarClient;
 use crate::star::presence;
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -169,22 +170,16 @@ pub async fn run_data_loop(
                 new_state,
                 match_id
             );
-            let mut players_data = match &new_state {
-                GameState::Pregame { match_id } => {
-                    players::fetch_pregame_players(&mut api_guard, match_id, &config)
-                        .await
-                        .unwrap_or_default()
+            let mut players_data =
+                fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
+
+            let refreshed_puuid = api_guard.puuid().to_string();
+            {
+                let mut state = app_state.write().await;
+                if state.local_puuid != refreshed_puuid {
+                    state.local_puuid = refreshed_puuid;
                 }
-                GameState::Ingame { match_id } => {
-                    players::fetch_coregame_players(&mut api_guard, match_id, &config)
-                        .await
-                        .unwrap_or_default()
-                }
-                GameState::Menu => players::fetch_menu_party_players(&api_guard)
-                    .await
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            };
+            }
 
             tracing::debug!(
                 "Phase 1 complete: fetched {} basic players",
@@ -346,84 +341,106 @@ pub async fn run_data_loop(
                 state.last_match_id = match_id.clone();
             }
 
-            // Phase 2: Enrich each player with rank/KD/HS% and update after each
-            let current_season = api_guard.get_current_season_id().await.ok().flatten();
-            let season_lookup = api_guard
-                .get_content()
-                .await
-                .ok()
-                .map(|content| players::build_season_lookup(&content))
-                .unwrap_or_default();
-            tracing::debug!(
-                "Phase 2 start: current_season={}",
-                current_season.as_deref().unwrap_or("none")
-            );
             let player_count = {
                 let state = app_state.read().await;
                 state.players.len()
             };
 
-            for i in 0..player_count {
-                let mut player = {
-                    let state = app_state.read().await;
+            if player_count == 0 {
+                if new_state.is_in_match() {
+                    tracing::warn!(
+                        "Player retrieval returned 0 players for {:?}; will retry on next poll",
+                        new_state
+                    );
+                } else {
+                    tracing::debug!("Menu party retrieval returned 0 players");
+                }
+            } else {
+                // Phase 2: Enrich each player with rank/KD/HS% and update after each
+                let current_season = api_guard.get_current_season_id().await.ok().flatten();
+                let season_lookup = api_guard
+                    .get_content()
+                    .await
+                    .ok()
+                    .map(|content| players::build_season_lookup(&content))
+                    .unwrap_or_default();
+                tracing::debug!(
+                    "Phase 2 start: current_season={}",
+                    current_season.as_deref().unwrap_or("none")
+                );
+
+                for i in 0..player_count {
+                    let mut player = {
+                        let state = app_state.read().await;
+                        if i >= state.players.len() {
+                            break;
+                        }
+                        state.players[i].clone()
+                    };
+
+                    let short_id = &player.puuid[..8.min(player.puuid.len())];
+
+                    if player.enriched {
+                        tracing::debug!(
+                            "Phase 2 skip [{} / {}]: {} already enriched",
+                            i + 1,
+                            player_count,
+                            short_id
+                        );
+                        continue;
+                    }
+
+                    tracing::debug!(
+                        "Phase 2 enrich [{} / {}]: {} '{}#{}'",
+                        i + 1,
+                        player_count,
+                        short_id,
+                        player.game_name,
+                        player.tag_line
+                    );
+                    players::enrich_player(
+                        &api_guard,
+                        &mut player,
+                        &current_season,
+                        &season_lookup,
+                    )
+                    .await;
+
+                    let mut state = app_state.write().await;
                     if i >= state.players.len() {
                         break;
                     }
-                    state.players[i].clone()
-                };
+                    if state.players[i].puuid != player.puuid {
+                        continue;
+                    }
 
-                let short_id = &player.puuid[..8.min(player.puuid.len())];
-
-                if player.enriched {
-                    tracing::debug!(
-                        "Phase 2 skip [{} / {}]: {} already enriched",
-                        i + 1,
-                        player_count,
-                        short_id
-                    );
-                    continue;
-                }
-
-                tracing::debug!(
-                    "Phase 2 enrich [{} / {}]: {} '{}#{}'",
-                    i + 1,
-                    player_count,
-                    short_id,
-                    player.game_name,
-                    player.tag_line
-                );
-                players::enrich_player(&api_guard, &mut player, &current_season, &season_lookup)
-                    .await;
-
-                let mut state = app_state.write().await;
-                if i < state.players.len() && state.players[i].puuid == player.puuid {
                     state.players[i] = player;
-                }
-                if let Some(history) = &history {
-                    if state.players[i].puuid != local_puuid && state.players[i].enriched {
-                        let _ = history.update_identity(
-                            &state.players[i].puuid,
-                            &state.players[i].game_name,
-                            &state.players[i].tag_line,
-                            Some(state.players[i].kd),
-                        );
+                    if let Some(history) = &history {
+                        if state.players[i].puuid != local_puuid && state.players[i].enriched {
+                            let _ = history.update_identity(
+                                &state.players[i].puuid,
+                                &state.players[i].game_name,
+                                &state.players[i].tag_line,
+                                Some(state.players[i].kd),
+                            );
+                        }
                     }
                 }
-            }
 
-            let enriched_count = {
-                let state = app_state.read().await;
-                state.players.iter().filter(|p| p.enriched).count()
-            };
-            tracing::info!(
-                "Initial enrichment: {}/{} players complete",
-                enriched_count,
-                player_count
-            );
+                let enriched_count = {
+                    let state = app_state.read().await;
+                    state.players.iter().filter(|p| p.enriched).count()
+                };
+                tracing::info!(
+                    "Initial enrichment: {}/{} players complete",
+                    enriched_count,
+                    player_count
+                );
+            }
         } else if let GameState::Pregame { match_id } = &new_state {
-            if let Ok(refreshed_players) =
-                players::fetch_pregame_players(&mut api_guard, match_id, &config).await
-            {
+            let refreshed_players =
+                fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
+            if !refreshed_players.is_empty() {
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id {
                     if state.players.is_empty() {
@@ -434,9 +451,9 @@ pub async fn run_data_loop(
                 }
             }
         } else if let GameState::Ingame { match_id } = &new_state {
-            if let Ok(refreshed_players) =
-                players::fetch_coregame_players(&mut api_guard, match_id, &config).await
-            {
+            let refreshed_players =
+                fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
+            if !refreshed_players.is_empty() {
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id {
                     if state.players.is_empty() {
@@ -686,6 +703,62 @@ fn should_refresh_encounter_identity(
                 || existing_player.tag_line != player.tag_line
         }
         None => true,
+    }
+}
+
+async fn fetch_players_for_state_with_reauth(
+    api: &mut RiotApiClient,
+    game_state: &GameState,
+    config: &Config,
+) -> Vec<PlayerDisplayData> {
+    match fetch_players_for_state(api, game_state, config).await {
+        Ok(players) => players,
+        Err(error) if game_state.is_in_match() => {
+            tracing::warn!(
+                "Failed to fetch players for {:?}: {}; refreshing Riot session and retrying",
+                game_state,
+                error
+            );
+
+            match api.refresh_auth_from_lockfile().await {
+                Ok(_) => match fetch_players_for_state(api, game_state, config).await {
+                    Ok(players) => players,
+                    Err(retry_error) => {
+                        tracing::warn!(
+                            "Retry failed to fetch players for {:?}: {}",
+                            game_state,
+                            retry_error
+                        );
+                        Vec::new()
+                    }
+                },
+                Err(refresh_error) => {
+                    tracing::warn!("Riot session refresh failed: {}", refresh_error);
+                    Vec::new()
+                }
+            }
+        }
+        Err(error) => {
+            tracing::debug!("Failed to fetch players for {:?}: {}", game_state, error);
+            Vec::new()
+        }
+    }
+}
+
+async fn fetch_players_for_state(
+    api: &mut RiotApiClient,
+    game_state: &GameState,
+    config: &Config,
+) -> Result<Vec<PlayerDisplayData>> {
+    match game_state {
+        GameState::Pregame { match_id } => {
+            players::fetch_pregame_players(api, match_id, config).await
+        }
+        GameState::Ingame { match_id } => {
+            players::fetch_coregame_players(api, match_id, config).await
+        }
+        GameState::Menu => players::fetch_menu_party_players(api).await,
+        GameState::WaitingForClient => Ok(Vec::new()),
     }
 }
 

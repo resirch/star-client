@@ -1,0 +1,100 @@
+name: Version Release
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - Cargo.toml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-client:
+    name: Release star-client
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check workspace version change
+        id: version
+        shell: pwsh
+        run: |
+          function Get-WorkspaceVersionFromText {
+            param([string]$Text)
+
+            $inWorkspacePackage = $false
+
+            foreach ($line in ($Text -split "`n")) {
+              $trimmed = $line.Trim()
+
+              if ($trimmed -match '^\[(.+)\]$') {
+                $inWorkspacePackage = $Matches[1] -eq 'workspace.package'
+                continue
+              }
+
+              if ($inWorkspacePackage -and $trimmed -match '^version\s*=\s*"([^"]+)"') {
+                return $Matches[1]
+              }
+            }
+
+            throw 'Could not find [workspace.package] version in Cargo.toml.'
+          }
+
+          $currentText = Get-Content -Raw Cargo.toml
+          $currentVersion = Get-WorkspaceVersionFromText $currentText
+          $previousVersion = ''
+
+          if ('${{ github.event_name }}' -eq 'push' -and '${{ github.event.before }}' -notmatch '^0+$') {
+            $previousText = git show '${{ github.event.before }}:Cargo.toml'
+            $previousVersion = Get-WorkspaceVersionFromText ($previousText -join "`n")
+          }
+
+          $tag = "v$currentVersion"
+          $tagExists = $false
+          git rev-parse --verify --quiet "refs/tags/$tag" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $tagExists = $true
+          }
+
+          $shouldRelease = ($previousVersion -ne $currentVersion) -and -not $tagExists
+
+          "version=$currentVersion" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "previous_version=$previousVersion" >> $env:GITHUB_OUTPUT
+          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+          if ($tagExists) {
+            Write-Host "Release tag $tag already exists. Skipping."
+          } elseif ($previousVersion -eq $currentVersion) {
+            Write-Host "Version did not change. Skipping release."
+          } else {
+            Write-Host "Version changed from '$previousVersion' to '$currentVersion'. Releasing $tag."
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.should_release == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.should_release == 'true'
+
+      - name: Build star-client
+        if: steps.version.outputs.should_release == 'true'
+        run: cargo build --release --package star-client
+
+      - name: Create GitHub release
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: pwsh
+        run: |
+          gh release create $env:RELEASE_TAG target/release/star-client.exe `
+            --title $env:RELEASE_TAG `
+            --generate-notes `
+            --latest `
+            --target $env:GITHUB_SHA
