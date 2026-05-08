@@ -3,12 +3,10 @@ use anyhow::Result;
 
 pub struct MapInfo {
     pub name: String,
-    pub id: String,
 }
 
 pub struct MatchContext {
     pub map: MapInfo,
-    pub mode: String,
     pub queue: String,
     pub server_id: String,
 }
@@ -19,7 +17,6 @@ pub async fn fetch_pregame_context(api: &RiotApiClient, match_id: &str) -> Resul
 
     Ok(MatchContext {
         map: resolve_map_name(&map_id),
-        mode: pregame.mode.unwrap_or_else(|| "Unknown".into()),
         queue: pregame.queue_i_d.unwrap_or_else(|| "competitive".into()),
         server_id: pregame.game_pod_id.unwrap_or_default(),
     })
@@ -31,7 +28,6 @@ pub async fn fetch_coregame_context(api: &RiotApiClient, match_id: &str) -> Resu
 
     Ok(MatchContext {
         map: resolve_map_name(&map_id),
-        mode: coregame.mode_i_d.unwrap_or_else(|| "Unknown".into()),
         queue: coregame.queue_i_d.unwrap_or_else(|| "competitive".into()),
         server_id: coregame.game_pod_id.unwrap_or_default(),
     })
@@ -56,7 +52,6 @@ fn resolve_map_name(map_url: &str) -> MapInfo {
 
     MapInfo {
         name: name.to_string(),
-        id: map_url.to_string(),
     }
 }
 

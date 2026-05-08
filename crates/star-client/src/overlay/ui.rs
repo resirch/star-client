@@ -233,8 +233,14 @@ fn overlay_layout(
         show_skin,
         ctx.style().spacing.item_spacing.x,
     );
-    let frame_height =
-        compute_frame_height(ctx, players, local_puuid, config, local_party_id, local_party_number);
+    let frame_height = compute_frame_height(
+        ctx,
+        players,
+        local_puuid,
+        config,
+        local_party_id,
+        local_party_number,
+    );
 
     OverlayLayout {
         widths,
@@ -815,10 +821,11 @@ fn player_row(
         // Party bar
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(widths.party, ROW_H), egui::Sense::hover());
-        if p.party_number > 0 {
+        let party_number = party_indicator_number(p, local_party_id, local_party_number);
+        if party_number > 0 {
             let bar = Rect::from_center_size(rect.center(), Vec2::new(4.0, ROW_H - 4.0));
             ui.painter()
-                .rect_filled(bar, 2.0, theme::party_color(p.party_number));
+                .rect_filled(bar, 2.0, theme::party_color(party_number));
         }
 
         // Star
@@ -1366,10 +1373,6 @@ fn selected_weapon_label(weapon_name: &str) -> String {
     weapon_name.trim().to_ascii_uppercase()
 }
 
-fn format_rank_display(player: &PlayerDisplayData, config: &Config) -> String {
-    format_rank_name(player.current_rank, config)
-}
-
 fn player_display_name(
     player: &PlayerDisplayData,
     config: &Config,
@@ -1486,14 +1489,6 @@ fn format_rank_parts(tier: i32, config: &Config) -> (String, Option<String>) {
         (base, Some(tier_label))
     } else {
         (format!("{base} {tier_label}"), None)
-    }
-}
-
-fn format_rank_name(tier: i32, config: &Config) -> String {
-    let (label, suffix) = format_rank_parts(tier, config);
-    match suffix {
-        Some(suffix) => format!("{label} {suffix}"),
-        None => label,
     }
 }
 
@@ -1618,6 +1613,20 @@ fn shares_local_party(
         player.party_id == local_party_id
     } else {
         local_party_number > 0 && player.party_number == local_party_number
+    }
+}
+
+fn party_indicator_number(
+    player: &PlayerDisplayData,
+    local_party_id: &str,
+    local_party_number: i32,
+) -> i32 {
+    if player.party_number > 0 {
+        player.party_number
+    } else if !local_party_id.is_empty() && player.party_id == local_party_id {
+        local_party_number.max(1)
+    } else {
+        0
     }
 }
 
@@ -1794,10 +1803,10 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        earned_rr_column_value, format_last_seen_summary, format_rank_display, format_rank_name,
-        format_rank_parts, format_server_id, format_skin_name, leaderboard_column_visible,
-        local_party_marker, player_display_name, rr_column_visible, shares_local_party,
-        skin_column_visible, split_players_by_team, winrate_column_value,
+        earned_rr_column_value, format_last_seen_summary, format_rank_parts, format_server_id,
+        format_skin_name, leaderboard_column_visible, local_party_marker, party_indicator_number,
+        player_display_name, rr_column_visible, shares_local_party, skin_column_visible,
+        split_players_by_team, winrate_column_value,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -1896,7 +1905,6 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(format_rank_display(&player, &config), "IMM II");
         assert!(rr_column_visible(&config));
         assert_eq!(
             format_rank_parts(player.current_rank, &config),
@@ -1905,7 +1913,6 @@ mod tests {
 
         config.features.truncate_ranks = false;
         config.features.roman_numerals = false;
-        assert_eq!(format_rank_name(16, &config), "Platinum 2");
         assert_eq!(
             format_rank_parts(16, &config),
             ("Platinum 2".to_string(), None)
@@ -1916,7 +1923,6 @@ mod tests {
     fn formats_unranked_as_dash() {
         let config = Config::default();
 
-        assert_eq!(format_rank_name(0, &config), "-");
         assert_eq!(format_rank_parts(0, &config), ("-".to_string(), None));
     }
 
@@ -2164,5 +2170,23 @@ mod tests {
 
         assert!(shares_local_party(&teammate, "", 3));
         assert!(!shares_local_party(&outsider, "", 3));
+    }
+
+    #[test]
+    fn party_indicator_uses_local_party_id_fallback() {
+        let teammate = PlayerDisplayData {
+            party_id: "live-party".into(),
+            party_number: 0,
+            ..Default::default()
+        };
+        let outsider = PlayerDisplayData {
+            party_id: "other-party".into(),
+            party_number: 0,
+            ..Default::default()
+        };
+
+        assert_eq!(party_indicator_number(&teammate, "live-party", 2), 2);
+        assert_eq!(party_indicator_number(&teammate, "live-party", 0), 1);
+        assert_eq!(party_indicator_number(&outsider, "live-party", 2), 0);
     }
 }

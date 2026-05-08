@@ -154,7 +154,7 @@ pub async fn run_data_loop(
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
-        let should_fetch_menu_party = should_fetch_menu_party(state_changed, &new_state);
+        let should_fetch_menu_party = should_fetch_menu_party(&new_state);
 
         if is_new_match
             || (state_changed && !match_id.is_empty())
@@ -232,13 +232,14 @@ pub async fn run_data_loop(
             }
 
             if new_state.is_in_match() && !players_data.is_empty() {
-                // Always mark party members from presences so incognito
-                // teammates have their names shown (matches in-game behaviour).
-                players::mark_party_from_presences(&api_guard, &mut players_data).await;
-
                 if config.behavior.party_finder {
                     party::detect_parties(&api_guard, &mut players_data).await;
                 }
+
+                // Always mark party members from presences after party finder so
+                // the local party keeps a visible indicator and incognito
+                // teammates have their names shown.
+                players::mark_party_from_presences(&api_guard, &mut players_data).await;
             }
 
             if config.star.enabled {
@@ -262,6 +263,7 @@ pub async fn run_data_loop(
                     HashMap::new()
                 }
             };
+            carry_over_existing_enrichment(&mut players_data, &existing_players_by_puuid);
             let previous_players_by_puuid: HashMap<String, PlayerDisplayData> = {
                 let state = app_state.read().await;
                 if state.last_match_id != match_id {
@@ -438,9 +440,10 @@ pub async fn run_data_loop(
                 );
             }
         } else if let GameState::Pregame { match_id } = &new_state {
-            let refreshed_players =
+            let mut refreshed_players =
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
+                players::mark_party_from_presences(&api_guard, &mut refreshed_players).await;
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id {
                     if state.players.is_empty() {
@@ -451,9 +454,10 @@ pub async fn run_data_loop(
                 }
             }
         } else if let GameState::Ingame { match_id } = &new_state {
-            let refreshed_players =
+            let mut refreshed_players =
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
+                players::mark_party_from_presences(&api_guard, &mut refreshed_players).await;
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id {
                     if state.players.is_empty() {
@@ -851,17 +855,35 @@ fn carry_over_enrichment(player: &mut PlayerDisplayData, source: &PlayerDisplayD
     player.enriched = source.enriched;
 }
 
-fn should_fetch_menu_party(state_changed: bool, game_state: &GameState) -> bool {
-    state_changed && matches!(game_state, GameState::Menu)
+fn carry_over_existing_enrichment(
+    players: &mut [PlayerDisplayData],
+    existing_players_by_puuid: &HashMap<String, PlayerDisplayData>,
+) {
+    for player in players {
+        if player.enriched {
+            continue;
+        }
+
+        if let Some(existing) = existing_players_by_puuid
+            .get(&player.puuid)
+            .filter(|existing| existing.enriched)
+        {
+            carry_over_enrichment(player, existing);
+        }
+    }
+}
+
+fn should_fetch_menu_party(game_state: &GameState) -> bool {
+    matches!(game_state, GameState::Menu)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        carry_over_enrichment, hydrate_player_history, is_ingame_match_id_change,
-        merge_live_players, merge_or_swap_side_change, same_player_roster, should_fetch_menu_party,
-        should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
-        WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+        carry_over_enrichment, carry_over_existing_enrichment, hydrate_player_history,
+        is_ingame_match_id_change, merge_live_players, merge_or_swap_side_change,
+        same_player_roster, should_fetch_menu_party, should_refresh_encounter_identity,
+        stabilize_game_state, swap_team_colors, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::EncounterRecord;
     use crate::game::state::GameState;
@@ -1125,10 +1147,53 @@ mod tests {
     }
 
     #[test]
-    fn fetches_menu_party_only_when_entering_menu() {
-        assert!(should_fetch_menu_party(true, &GameState::Menu));
-        assert!(!should_fetch_menu_party(false, &GameState::Menu));
-        assert!(!should_fetch_menu_party(true, &GameState::WaitingForClient));
+    fn fetches_menu_party_while_in_menu() {
+        assert!(should_fetch_menu_party(&GameState::Menu));
+        assert!(!should_fetch_menu_party(&GameState::WaitingForClient));
+    }
+
+    #[test]
+    fn carries_over_existing_enrichment_for_live_menu_refreshes() {
+        let mut refreshed = vec![
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                game_name: "NewName".into(),
+                tag_line: "NA1".into(),
+                team_id: "party".into(),
+                party_id: "party-live".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "player-2".into(),
+                game_name: "NewPlayer".into(),
+                tag_line: "NA1".into(),
+                team_id: "party".into(),
+                party_id: "party-live".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        let existing = HashMap::from([(
+            "player-1".to_string(),
+            PlayerDisplayData {
+                puuid: "player-1".into(),
+                current_rank: 21,
+                rank_name: "Ascendant 1".into(),
+                kd: 1.25,
+                headshot_percent: 24.0,
+                enriched: true,
+                ..Default::default()
+            },
+        )]);
+
+        carry_over_existing_enrichment(&mut refreshed, &existing);
+
+        assert!(refreshed[0].enriched);
+        assert_eq!(refreshed[0].rank_name, "Ascendant 1");
+        assert_eq!(refreshed[0].kd, 1.25);
+        assert_eq!(refreshed[0].game_name, "NewName");
+        assert!(!refreshed[1].enriched);
     }
 
     #[test]

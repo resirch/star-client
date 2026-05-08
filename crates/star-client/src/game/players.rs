@@ -165,18 +165,14 @@ pub async fn fetch_coregame_players(
 /// Marks players that share the local player's party using chat presences.
 /// This ensures incognito party members have their `party_id` set so the
 /// overlay can reveal their names (matching in-game behaviour).
-pub async fn mark_party_from_presences(
-    api: &RiotApiClient,
-    players: &mut [PlayerDisplayData],
-) {
+pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [PlayerDisplayData]) {
     let presences = match api.get_valorant_presences().await {
         Ok(p) => p,
         Err(_) => return,
     };
 
     let local_puuid = api.puuid();
-    let Some((_, local_presence)) = presences.iter().find(|(puuid, _)| puuid == local_puuid)
-    else {
+    let Some((_, local_presence)) = presences.iter().find(|(puuid, _)| puuid == local_puuid) else {
         return;
     };
 
@@ -190,34 +186,44 @@ pub async fn mark_party_from_presences(
         .map(|(puuid, _)| puuid.as_str())
         .collect();
 
+    let party_number = players
+        .iter()
+        .find(|player| party_puuids.contains(player.puuid.as_str()) && player.party_number > 0)
+        .map(|player| player.party_number)
+        .unwrap_or(1);
+
     for player in players.iter_mut() {
         if party_puuids.contains(player.puuid.as_str()) {
             player.party_id = local_presence.party_id.clone();
+            player.party_number = party_number;
         }
     }
 }
 
 pub async fn fetch_menu_party_players(api: &RiotApiClient) -> Result<Vec<PlayerDisplayData>> {
-    let presences = api.get_valorant_presences().await?;
+    let presences = api.get_valorant_presences().await.unwrap_or_default();
     let local_puuid = api.puuid();
-    let Some((_, local_presence)) = presences.iter().find(|(puuid, _)| puuid == local_puuid) else {
-        return Ok(Vec::new());
-    };
-
-    if local_presence.party_id.is_empty() || local_presence.party_size <= 1 {
-        return Ok(Vec::new());
-    }
+    let local_presence = presences
+        .iter()
+        .find(|(puuid, _)| puuid == local_puuid)
+        .map(|(_, presence)| presence);
+    let local_party_id = local_presence
+        .filter(|presence| !presence.party_id.is_empty())
+        .map(|presence| presence.party_id.as_str())
+        .unwrap_or_default();
 
     let mut party_puuids = Vec::new();
     party_puuids.push(local_puuid.to_string());
-    party_puuids.extend(
-        presences
-            .iter()
-            .filter(|(puuid, presence)| {
-                puuid.as_str() != local_puuid && presence.party_id == local_presence.party_id
-            })
-            .map(|(puuid, _)| puuid.clone()),
-    );
+    if !local_party_id.is_empty() {
+        party_puuids.extend(
+            presences
+                .iter()
+                .filter(|(puuid, presence)| {
+                    puuid.as_str() != local_puuid && presence.party_id == local_party_id
+                })
+                .map(|(puuid, _)| puuid.clone()),
+        );
+    }
 
     let names = api.get_names(&party_puuids).await.unwrap_or_default();
     let name_map: HashMap<String, &NameServiceEntry> = names
@@ -229,8 +235,10 @@ pub async fn fetch_menu_party_players(api: &RiotApiClient) -> Result<Vec<PlayerD
     for puuid in party_puuids {
         let mut display = build_basic_player(&puuid, &name_map);
         display.team_id = "party".to_string();
-        display.party_id = local_presence.party_id.clone();
-        display.party_number = 1;
+        display.party_id = local_party_id.to_string();
+        if !local_party_id.is_empty() {
+            display.party_number = 1;
+        }
         players.push(display);
     }
 

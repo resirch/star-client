@@ -5,6 +5,7 @@ mod discord;
 mod game;
 mod overlay;
 mod riot;
+mod settings;
 mod star;
 mod stats;
 mod tray;
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const STARTUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+const SETTINGS_SCROLL_MULTIPLIER: f32 = 64.0;
 #[cfg(target_os = "windows")]
 const DETACHED_LAUNCH_ENV: &str = "STAR_CLIENT_DETACHED";
 
@@ -33,10 +35,11 @@ fn main() {
 
     tracing::info!("Star Client v{}", env!("CARGO_PKG_VERSION"));
 
-    let config = Config::load().unwrap_or_else(|e| {
+    let mut config = Config::load().unwrap_or_else(|e| {
         tracing::error!("Failed to load config: {}", e);
         Config::default()
     });
+    config.star.enabled = true;
 
     #[cfg(target_os = "windows")]
     if relaunch_without_terminal_if_needed(&config) {
@@ -47,9 +50,10 @@ fn main() {
     apply_terminal_launch_preference(&config);
 
     let quit_flag = Arc::new(AtomicBool::new(false));
+    let settings_requested = Arc::new(AtomicBool::new(false));
     let app_state = Arc::new(RwLock::new(AppState::new(config.clone())));
 
-    let tray = tray::SystemTray::new(Arc::clone(&app_state), Arc::clone(&quit_flag)).ok();
+    let tray = tray::SystemTray::new(Arc::clone(&quit_flag), Arc::clone(&settings_requested)).ok();
 
     let hotkey_mgr = HotkeyManager::new();
     let app_state_hotkey = Arc::clone(&app_state);
@@ -79,7 +83,7 @@ fn main() {
         });
     });
 
-    run_overlay(app_state, quit_flag, key_held, tray);
+    run_overlay(app_state, quit_flag, key_held, tray, settings_requested);
 }
 
 #[cfg(target_os = "windows")]
@@ -242,6 +246,7 @@ fn run_overlay(
     quit_flag: Arc<AtomicBool>,
     key_held: Arc<AtomicBool>,
     tray: Option<tray::SystemTray>,
+    settings_requested: Arc<AtomicBool>,
 ) {
     use egui_overlay::EguiOverlay;
 
@@ -250,9 +255,13 @@ fn run_overlay(
         quit_flag: Arc<AtomicBool>,
         key_held: Arc<AtomicBool>,
         tray: Option<tray::SystemTray>,
+        settings_requested: Arc<AtomicBool>,
         initialized: bool,
         shown: bool,
         topmost_active: bool,
+        settings_open: bool,
+        settings_window_active: bool,
+        settings_state: settings::SettingsState,
     }
 
     impl EguiOverlay for StarOverlay {
@@ -262,6 +271,14 @@ fn run_overlay(
             default_gfx_backend: &mut egui_overlay::egui_render_three_d::ThreeDBackend,
             glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
         ) -> Option<(egui::PlatformOutput, std::time::Duration)> {
+            if self.settings_window_active && glfw_backend.window.should_close() {
+                glfw_backend.window.set_should_close(false);
+                self.settings_open = false;
+                restore_overlay_window(glfw_backend);
+                self.settings_window_active = false;
+                self.settings_state.clear();
+            }
+
             if self.quit_flag.load(Ordering::Relaxed) {
                 glfw_backend.window.set_should_close(true);
                 return None;
@@ -281,9 +298,16 @@ fn run_overlay(
                     .clear_color(0.0, 0.0, 0.0, 0.0);
             }
 
-            glfw_backend.set_passthrough(true);
+            glfw_backend.set_passthrough(!(self.settings_open || self.settings_window_active));
 
-            let input = glfw_backend.take_raw_input();
+            let mut input = glfw_backend.take_raw_input();
+            if self.settings_open || self.settings_window_active {
+                for event in &mut input.events {
+                    if let egui::Event::MouseWheel { delta, .. } = event {
+                        *delta *= SETTINGS_SCROLL_MULTIPLIER;
+                    }
+                }
+            }
             default_gfx_backend.prepare_frame(|| {
                 let latest_size = glfw_backend.window.get_framebuffer_size();
                 [latest_size.0 as _, latest_size.1 as _]
@@ -314,11 +338,6 @@ fn run_overlay(
             use egui_overlay::egui_window_glfw_passthrough::glfw::Context;
             glfw_backend.window.swap_buffers();
 
-            if !self.shown {
-                glfw_backend.window.show();
-                self.shown = true;
-            }
-
             Some((platform_output, repaint_after))
         }
 
@@ -334,7 +353,57 @@ fn run_overlay(
             }
 
             if let Some(tray) = &self.tray {
-                tray.poll_events(&self.app_state);
+                tray.poll_events();
+            }
+
+            let settings_open_requested = self.settings_requested.swap(false, Ordering::Relaxed);
+            if settings_open_requested {
+                self.settings_open = true;
+                if self.settings_window_active {
+                    glfw_backend.window.show();
+                    glfw_backend.window.focus();
+                } else {
+                    let config = {
+                        let state = self.app_state.blocking_read();
+                        state.config.clone()
+                    };
+                    self.settings_state.begin(config);
+                }
+            }
+
+            if self.settings_open {
+                if !self.settings_window_active {
+                    set_overlay_topmost(glfw_backend, false);
+                    self.topmost_active = false;
+                    activate_settings_window(glfw_backend);
+                    self.settings_window_active = true;
+                    self.shown = true;
+                }
+
+                settings::render(
+                    egui_context,
+                    &self.app_state,
+                    &self.quit_flag,
+                    &mut self.settings_state,
+                    &mut self.settings_open,
+                );
+
+                if !self.settings_open {
+                    restore_overlay_window(glfw_backend);
+                    self.settings_window_active = false;
+                    self.shown = false;
+                    self.settings_state.clear();
+                }
+
+                egui_context.request_repaint_after(std::time::Duration::from_millis(16));
+                return;
+            }
+
+            if self.settings_window_active {
+                restore_overlay_window(glfw_backend);
+                self.settings_window_active = false;
+                self.shown = false;
+                self.settings_state.clear();
             }
 
             let hotkey_active = self.key_held.load(Ordering::Relaxed);
@@ -360,6 +429,14 @@ fn run_overlay(
                 self.topmost_active = should_be_topmost;
             }
 
+            if should_be_topmost && !self.shown {
+                glfw_backend.window.show();
+                self.shown = true;
+            } else if !should_be_topmost && self.shown {
+                glfw_backend.window.hide();
+                self.shown = false;
+            }
+
             egui_context.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
@@ -369,9 +446,13 @@ fn run_overlay(
         quit_flag,
         key_held,
         tray,
+        settings_requested,
         initialized: false,
         shown: false,
         topmost_active: false,
+        settings_open: false,
+        settings_window_active: false,
+        settings_state: settings::SettingsState::default(),
     });
 }
 
@@ -399,6 +480,7 @@ fn start_overlay<T: egui_overlay::EguiOverlay + 'static>(user_data: T) {
         ..Default::default()
     });
 
+    set_window_icon(&mut glfw_backend);
     glfw_backend.window.set_floating(true);
     glfw_backend.window.set_decorated(false);
     glfw_backend.window.set_focus_on_show(false);
@@ -454,6 +536,122 @@ fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::Gl
     }
 
     glfw_backend.set_passthrough(true);
+}
+
+fn activate_settings_window(
+    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+) {
+    glfw_backend.set_title("Star Client Settings".to_string());
+    glfw_backend.window.set_should_close(false);
+    glfw_backend.window.set_decorated(true);
+    glfw_backend.window.set_resizable(true);
+    glfw_backend.window.set_focus_on_show(true);
+    glfw_backend.window.set_floating(false);
+    glfw_backend.window.set_size_limits(
+        Some(settings::MIN_WINDOW_SIZE[0]),
+        Some(settings::MIN_WINDOW_SIZE[1]),
+        None,
+        None,
+    );
+    glfw_backend.set_passthrough(false);
+    glfw_backend.set_window_size(settings::INITIAL_WINDOW_SIZE);
+    center_window(glfw_backend);
+
+    #[cfg(target_os = "windows")]
+    set_settings_window_styles(glfw_backend, true);
+
+    glfw_backend.window.show();
+    glfw_backend.window.focus();
+}
+
+fn center_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend) {
+    let (window_w, window_h) = glfw_backend.window.get_size();
+    let Some((work_x, work_y, work_w, work_h)) =
+        glfw_backend.glfw.with_primary_monitor(|_, monitor| {
+            monitor.map(|monitor| monitor.get_workarea())
+        })
+    else {
+        return;
+    };
+
+    let x = work_x + ((work_w - window_w).max(0) / 2);
+    let y = work_y + ((work_h - window_h).max(0) / 2);
+    glfw_backend.window.set_pos(x, y);
+}
+
+fn restore_overlay_window(
+    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+) {
+    glfw_backend.set_title("Star Client".to_string());
+    glfw_backend.window.set_should_close(false);
+    glfw_backend.window.set_size_limits(None, None, None, None);
+    glfw_backend.window.set_resizable(false);
+    glfw_backend.window.set_decorated(false);
+    glfw_backend.window.set_focus_on_show(false);
+
+    #[cfg(target_os = "windows")]
+    set_settings_window_styles(glfw_backend, false);
+
+    init_window(glfw_backend);
+    glfw_backend.window.hide();
+}
+
+fn set_window_icon(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend) {
+    use egui_overlay::egui_window_glfw_passthrough::glfw::PixelImage;
+
+    let icons = [16, 32, 48, 64, 128]
+        .into_iter()
+        .filter_map(|size| {
+            let (pixels, width, height) = assets::window_icon_rgba(size).ok()?;
+            Some(PixelImage {
+                width,
+                height,
+                pixels,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if !icons.is_empty() {
+        glfw_backend.window.set_icon_from_pixels(icons);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_settings_window_styles(
+    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+    settings_mode: bool,
+) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    };
+
+    let hwnd = glfw_backend.window.get_win32_window();
+    if hwnd.is_null() {
+        return;
+    }
+
+    unsafe {
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let next_style = if settings_mode {
+            (ex_style | WS_EX_APPWINDOW as isize)
+                & !(WS_EX_TOOLWINDOW as isize)
+                & !(WS_EX_TRANSPARENT as isize)
+        } else {
+            (ex_style | WS_EX_TOOLWINDOW as isize | WS_EX_TRANSPARENT as isize)
+                & !(WS_EX_APPWINDOW as isize)
+        };
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next_style);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
+    }
 }
 
 fn set_overlay_topmost(

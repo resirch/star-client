@@ -11,6 +11,15 @@ pub fn tray_icon_rgba(size: u32) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     Ok((image.into_raw(), width, height))
 }
 
+pub fn window_icon_rgba(size: u32) -> anyhow::Result<(Vec<u32>, u32, u32)> {
+    let (rgba, width, height) = tray_icon_rgba(size)?;
+    let pixels = rgba
+        .chunks_exact(4)
+        .map(|pixel| u32::from_ne_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]))
+        .collect();
+    Ok((pixels, width, height))
+}
+
 pub fn overlay_star_image(size: u32) -> anyhow::Result<egui::ColorImage> {
     let image = image::load_from_memory(OVERLAY_STAR_BYTES)?
         .resize(size, size, FilterType::Lanczos3)

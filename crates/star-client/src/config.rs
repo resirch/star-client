@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub overlay: OverlayConfig,
@@ -15,7 +15,7 @@ pub struct Config {
     pub star: StarConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayConfig {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
@@ -27,7 +27,7 @@ pub struct OverlayConfig {
     pub truncate_skins: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColumnConfig {
     #[serde(default = "bool_true")]
     pub skin: bool,
@@ -51,7 +51,7 @@ pub struct ColumnConfig {
     pub level: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BehaviorConfig {
     #[serde(default = "bool_true")]
     pub auto_show_pregame: bool,
@@ -67,7 +67,7 @@ pub struct BehaviorConfig {
     pub launch_without_terminal: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
     #[serde(default = "bool_true")]
     pub last_played: bool,
@@ -81,7 +81,7 @@ pub struct FeatureConfig {
     pub roman_numerals: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StarConfig {
     #[serde(default = "bool_true")]
     pub enabled: bool,

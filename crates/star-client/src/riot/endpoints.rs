@@ -71,11 +71,3 @@ pub fn content(auth: &RiotAuth) -> String {
 pub fn local_presence(port: u16) -> String {
     format!("https://127.0.0.1:{}/chat/v4/presences", port)
 }
-
-pub fn local_websocket(port: u16, password: &str) -> String {
-    let basic = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        format!("riot:{}", password),
-    );
-    format!("wss://127.0.0.1:{}/?authorization=Basic {}", port, basic)
-}

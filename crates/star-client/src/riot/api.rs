@@ -28,10 +28,6 @@ impl RiotApiClient {
         })
     }
 
-    pub fn auth(&self) -> &RiotAuth {
-        &self.auth
-    }
-
     pub fn puuid(&self) -> &str {
         &self.auth.puuid
     }

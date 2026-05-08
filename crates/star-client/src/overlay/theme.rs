@@ -1,4 +1,4 @@
-use egui::{Color32, FontFamily, FontId, Rounding, Stroke, Vec2};
+use egui::{Color32, FontFamily, FontId, Rounding, Stroke};
 use std::path::Path;
 
 const REGULAR_FONT_FAMILY: &str = "overlay-regular";
@@ -7,7 +7,6 @@ pub const BG_COLOR: Color32 = Color32::from_rgba_premultiplied(15, 15, 20, 220);
 pub const HEADER_BG: Color32 = Color32::from_rgba_premultiplied(25, 25, 35, 240);
 pub const ROW_BG_ALLY: Color32 = Color32::from_rgba_premultiplied(20, 30, 20, 200);
 pub const ROW_BG_ENEMY: Color32 = Color32::from_rgba_premultiplied(30, 20, 20, 200);
-pub const ROW_BG_HOVER: Color32 = Color32::from_rgba_premultiplied(40, 40, 55, 220);
 pub const BORDER_COLOR: Color32 = Color32::from_rgba_premultiplied(60, 60, 80, 180);
 pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(230, 230, 240);
 pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(160, 160, 175);
@@ -191,10 +190,6 @@ pub fn table_rounding() -> Rounding {
 
 pub fn table_stroke() -> Stroke {
     Stroke::new(1.0, BORDER_COLOR)
-}
-
-pub fn row_padding() -> Vec2 {
-    Vec2::new(8.0, 4.0)
 }
 
 pub fn team_text_color(is_ally: bool) -> Color32 {
