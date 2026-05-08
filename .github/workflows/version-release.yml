@@ -55,11 +55,7 @@ jobs:
           }
 
           $tag = "v$currentVersion"
-          $tagExists = $false
-          git rev-parse --verify --quiet "refs/tags/$tag" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            $tagExists = $true
-          }
+          $tagExists = [bool](git ls-remote --tags origin "refs/tags/$tag")
 
           $shouldRelease = ($previousVersion -ne $currentVersion) -and -not $tagExists
 
