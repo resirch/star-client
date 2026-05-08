@@ -1,6 +1,6 @@
 use crate::db;
 use crate::types::{
-    DeregisterRequest, HeartbeatRequest, HealthResponse, QueryRequest, QueryResponse,
+    DeregisterRequest, HealthResponse, HeartbeatRequest, QueryRequest, QueryResponse,
     RegisterRequest, RegisterResponse,
 };
 use axum::extract::State;

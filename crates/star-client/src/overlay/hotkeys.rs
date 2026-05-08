@@ -145,7 +145,11 @@ fn parse_hotkey(name: &str) -> Option<Hotkey> {
     let mut win = false;
     let mut key = None;
 
-    for part in name.split('+').map(str::trim).filter(|part| !part.is_empty()) {
+    for part in name
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         match part.to_ascii_uppercase().as_str() {
             "CTRL" | "CONTROL" => ctrl = true,
             "SHIFT" => shift = true,
@@ -306,7 +310,8 @@ fn key_to_hotkey_key(key: egui::Key) -> Option<HotkeyKey> {
 #[cfg(target_os = "windows")]
 fn any_vk_held(vks: &[i32]) -> bool {
     vks.iter().any(|vk| {
-        let state = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(*vk) };
+        let state =
+            unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(*vk) };
         (state & (1 << 15)) != 0
     })
 }

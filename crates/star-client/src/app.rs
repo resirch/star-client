@@ -154,13 +154,14 @@ pub async fn run_data_loop(
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
-        let should_fetch_menu_party = should_fetch_menu_party(&new_state);
+        let should_fetch_initial_players = should_fetch_initial_player_snapshot(
+            &new_state,
+            state_changed,
+            is_new_match,
+            overlay_weapon_changed,
+        );
 
-        if is_new_match
-            || (state_changed && !match_id.is_empty())
-            || (overlay_weapon_changed && !match_id.is_empty())
-            || should_fetch_menu_party
-        {
+        if should_fetch_initial_players {
             // Phase 1: Fetch basic player info (names, agents, levels, teams)
             tracing::debug!(
                 "Player retrieval triggered: state_changed={}, is_new_match={}, overlay_weapon_changed={}, game_state={:?}, match_id={}",
@@ -359,85 +360,188 @@ pub async fn run_data_loop(
                 }
             } else {
                 // Phase 2: Enrich each player with rank/KD/HS% and update after each
-                let current_season = api_guard.get_current_season_id().await.ok().flatten();
-                let season_lookup = api_guard
-                    .get_content()
-                    .await
-                    .ok()
-                    .map(|content| players::build_season_lookup(&content))
-                    .unwrap_or_default();
-                tracing::debug!(
-                    "Phase 2 start: current_season={}",
-                    current_season.as_deref().unwrap_or("none")
-                );
+                let has_unenriched_players = {
+                    let state = app_state.read().await;
+                    state
+                        .players
+                        .iter()
+                        .any(|p| !p.enriched && !p.puuid.is_empty())
+                };
+                if !has_unenriched_players {
+                    tracing::debug!(
+                        "Initial enrichment skipped: all {} players already enriched",
+                        player_count
+                    );
+                } else {
+                    let current_season = api_guard.get_current_season_id().await.ok().flatten();
+                    let season_lookup = api_guard
+                        .get_content()
+                        .await
+                        .ok()
+                        .map(|content| players::build_season_lookup(&content))
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        "Phase 2 start: current_season={}",
+                        current_season.as_deref().unwrap_or("none")
+                    );
 
-                for i in 0..player_count {
-                    let mut player = {
-                        let state = app_state.read().await;
+                    for i in 0..player_count {
+                        let mut player = {
+                            let state = app_state.read().await;
+                            if i >= state.players.len() {
+                                break;
+                            }
+                            state.players[i].clone()
+                        };
+
+                        let short_id = &player.puuid[..8.min(player.puuid.len())];
+
+                        if player.enriched {
+                            tracing::debug!(
+                                "Phase 2 skip [{} / {}]: {} already enriched",
+                                i + 1,
+                                player_count,
+                                short_id
+                            );
+                            continue;
+                        }
+
+                        tracing::debug!(
+                            "Phase 2 enrich [{} / {}]: {} '{}#{}'",
+                            i + 1,
+                            player_count,
+                            short_id,
+                            player.game_name,
+                            player.tag_line
+                        );
+                        players::enrich_player(
+                            &api_guard,
+                            &mut player,
+                            &current_season,
+                            &season_lookup,
+                        )
+                        .await;
+
+                        let mut state = app_state.write().await;
                         if i >= state.players.len() {
                             break;
                         }
-                        state.players[i].clone()
+                        if state.players[i].puuid != player.puuid {
+                            continue;
+                        }
+
+                        state.players[i] = player;
+                        if let Some(history) = &history {
+                            if state.players[i].puuid != local_puuid && state.players[i].enriched {
+                                let _ = history.update_identity(
+                                    &state.players[i].puuid,
+                                    &state.players[i].game_name,
+                                    &state.players[i].tag_line,
+                                    Some(state.players[i].kd),
+                                );
+                            }
+                        }
+                    }
+
+                    let enriched_count = {
+                        let state = app_state.read().await;
+                        state.players.iter().filter(|p| p.enriched).count()
                     };
-
-                    let short_id = &player.puuid[..8.min(player.puuid.len())];
-
-                    if player.enriched {
-                        tracing::debug!(
-                            "Phase 2 skip [{} / {}]: {} already enriched",
-                            i + 1,
-                            player_count,
-                            short_id
-                        );
-                        continue;
-                    }
-
-                    tracing::debug!(
-                        "Phase 2 enrich [{} / {}]: {} '{}#{}'",
-                        i + 1,
-                        player_count,
-                        short_id,
-                        player.game_name,
-                        player.tag_line
+                    tracing::info!(
+                        "Initial enrichment: {}/{} players complete",
+                        enriched_count,
+                        player_count
                     );
-                    players::enrich_player(
-                        &api_guard,
-                        &mut player,
-                        &current_season,
-                        &season_lookup,
-                    )
-                    .await;
+                }
+            }
+        } else if matches!(new_state, GameState::Menu) {
+            let mut refreshed_players =
+                fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
+            if !refreshed_players.is_empty() {
+                if config.star.enabled {
+                    presence::mark_star_users(&star_client, &mut refreshed_players).await;
+                }
 
-                    let mut state = app_state.write().await;
-                    if i >= state.players.len() {
-                        break;
+                let new_player_puuids: Vec<String> = {
+                    let state = app_state.read().await;
+                    refreshed_players
+                        .iter()
+                        .filter(|player| {
+                            !state
+                                .players
+                                .iter()
+                                .any(|existing| existing.puuid == player.puuid)
+                        })
+                        .map(|player| player.puuid.clone())
+                        .collect()
+                };
+                let mut state = app_state.write().await;
+                if matches!(state.game_state, GameState::Menu) {
+                    if state.players.is_empty() {
+                        state.players = refreshed_players;
+                    } else {
+                        merge_live_players(&mut state.players, refreshed_players);
                     }
-                    if state.players[i].puuid != player.puuid {
-                        continue;
-                    }
+                }
+                drop(state);
 
-                    state.players[i] = player;
-                    if let Some(history) = &history {
-                        if state.players[i].puuid != local_puuid && state.players[i].enriched {
-                            let _ = history.update_identity(
-                                &state.players[i].puuid,
-                                &state.players[i].game_name,
-                                &state.players[i].tag_line,
-                                Some(state.players[i].kd),
-                            );
+                if !new_player_puuids.is_empty() {
+                    tracing::debug!(
+                        "Live menu enrichment: {} new players",
+                        new_player_puuids.len()
+                    );
+                    let local_puuid = {
+                        let state = app_state.read().await;
+                        state.local_puuid.clone()
+                    };
+                    let current_season = api_guard.get_current_season_id().await.ok().flatten();
+                    let season_lookup = api_guard
+                        .get_content()
+                        .await
+                        .ok()
+                        .map(|content| players::build_season_lookup(&content))
+                        .unwrap_or_default();
+
+                    for puuid in &new_player_puuids {
+                        let mut player = {
+                            let state = app_state.read().await;
+                            match state.players.iter().find(|player| player.puuid == *puuid) {
+                                Some(player) if !player.enriched => player.clone(),
+                                _ => continue,
+                            }
+                        };
+
+                        players::enrich_player(
+                            &api_guard,
+                            &mut player,
+                            &current_season,
+                            &season_lookup,
+                        )
+                        .await;
+
+                        let mut state = app_state.write().await;
+                        if let Some(existing) = state
+                            .players
+                            .iter_mut()
+                            .find(|existing| existing.puuid == player.puuid)
+                        {
+                            *existing = player;
+                        }
+
+                        if let Some(history) = &history {
+                            if let Some(player) = state.players.iter().find(|p| p.puuid == *puuid) {
+                                if player.puuid != local_puuid && player.enriched {
+                                    let _ = history.update_identity(
+                                        &player.puuid,
+                                        &player.game_name,
+                                        &player.tag_line,
+                                        Some(player.kd),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
-
-                let enriched_count = {
-                    let state = app_state.read().await;
-                    state.players.iter().filter(|p| p.enriched).count()
-                };
-                tracing::info!(
-                    "Initial enrichment: {}/{} players complete",
-                    enriched_count,
-                    player_count
-                );
             }
         } else if let GameState::Pregame { match_id } = &new_state {
             let mut refreshed_players =
@@ -877,13 +981,25 @@ fn should_fetch_menu_party(game_state: &GameState) -> bool {
     matches!(game_state, GameState::Menu)
 }
 
+fn should_fetch_initial_player_snapshot(
+    game_state: &GameState,
+    state_changed: bool,
+    is_new_match: bool,
+    overlay_weapon_changed: bool,
+) -> bool {
+    is_new_match
+        || (game_state.is_in_match() && (state_changed || overlay_weapon_changed))
+        || (state_changed && should_fetch_menu_party(game_state))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         carry_over_enrichment, carry_over_existing_enrichment, hydrate_player_history,
         is_ingame_match_id_change, merge_live_players, merge_or_swap_side_change,
-        same_player_roster, should_fetch_menu_party, should_refresh_encounter_identity,
-        stabilize_game_state, swap_team_colors, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+        same_player_roster, should_fetch_initial_player_snapshot, should_fetch_menu_party,
+        should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
+        WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::EncounterRecord;
     use crate::game::state::GameState;
@@ -1150,6 +1266,42 @@ mod tests {
     fn fetches_menu_party_while_in_menu() {
         assert!(should_fetch_menu_party(&GameState::Menu));
         assert!(!should_fetch_menu_party(&GameState::WaitingForClient));
+    }
+
+    #[test]
+    fn menu_live_poll_does_not_use_initial_player_snapshot() {
+        assert!(should_fetch_initial_player_snapshot(
+            &GameState::Menu,
+            true,
+            false,
+            false
+        ));
+        assert!(!should_fetch_initial_player_snapshot(
+            &GameState::Menu,
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn match_snapshot_fetches_on_match_or_overlay_changes() {
+        let ingame = GameState::Ingame {
+            match_id: "match-1".into(),
+        };
+
+        assert!(should_fetch_initial_player_snapshot(
+            &ingame, false, true, false
+        ));
+        assert!(should_fetch_initial_player_snapshot(
+            &ingame, true, false, false
+        ));
+        assert!(should_fetch_initial_player_snapshot(
+            &ingame, false, false, true
+        ));
+        assert!(!should_fetch_initial_player_snapshot(
+            &ingame, false, false, false
+        ));
     }
 
     #[test]

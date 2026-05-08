@@ -71,16 +71,10 @@ pub fn render(
                 ui.horizontal(|ui| {
                     ui.heading(egui::RichText::new("Settings").color(theme::TEXT_PRIMARY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(dirty, egui::Button::new("Save"))
-                            .clicked()
-                        {
+                        if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
                             save_requested = true;
                         }
-                        if ui
-                            .add_enabled(dirty, egui::Button::new("Reset"))
-                            .clicked()
-                        {
+                        if ui.add_enabled(dirty, egui::Button::new("Reset")).clicked() {
                             reset_requested = true;
                         }
                     });
@@ -226,8 +220,8 @@ pub fn render(
             let original = baseline.clone();
             let mut updated = settings_state.draft.clone();
             normalize_config_selections(&mut updated);
-            let terminal_launch_changed =
-                original.behavior.launch_without_terminal != updated.behavior.launch_without_terminal;
+            let terminal_launch_changed = original.behavior.launch_without_terminal
+                != updated.behavior.launch_without_terminal;
             if apply_config_change(
                 app_state,
                 quit_flag,
@@ -287,7 +281,11 @@ fn hotkey_recorder(ui: &mut egui::Ui, settings_state: &mut SettingsState) {
         {
             settings_state.recording_hotkey = true;
         }
-        ui.label(egui::RichText::new("Hotkey").color(theme::TEXT_PRIMARY).strong());
+        ui.label(
+            egui::RichText::new("Hotkey")
+                .color(theme::TEXT_PRIMARY)
+                .strong(),
+        );
     });
 }
 

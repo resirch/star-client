@@ -566,10 +566,9 @@ fn activate_settings_window(
 
 fn center_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend) {
     let (window_w, window_h) = glfw_backend.window.get_size();
-    let Some((work_x, work_y, work_w, work_h)) =
-        glfw_backend.glfw.with_primary_monitor(|_, monitor| {
-            monitor.map(|monitor| monitor.get_workarea())
-        })
+    let Some((work_x, work_y, work_w, work_h)) = glfw_backend
+        .glfw
+        .with_primary_monitor(|_, monitor| monitor.map(|monitor| monitor.get_workarea()))
     else {
         return;
     };
