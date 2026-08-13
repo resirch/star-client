@@ -2,7 +2,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+
+const STAR_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
@@ -57,6 +60,7 @@ impl StarClient {
         let resp: RegisterResponse = self
             .http
             .post(&url)
+            .timeout(STAR_REQUEST_TIMEOUT)
             .json(&RegisterRequest {
                 puuid: puuid.to_string(),
                 client_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -77,6 +81,7 @@ impl StarClient {
             let url = format!("{}/api/heartbeat", self.backend_url);
             self.http
                 .post(&url)
+                .timeout(STAR_REQUEST_TIMEOUT)
                 .json(&HeartbeatRequest {
                     session_token: token,
                 })
@@ -94,6 +99,7 @@ impl StarClient {
             let _ = self
                 .http
                 .post(&url)
+                .timeout(STAR_REQUEST_TIMEOUT)
                 .json(&DeregisterRequest {
                     session_token: token,
                 })
@@ -108,6 +114,7 @@ impl StarClient {
         let resp: QueryResponse = self
             .http
             .post(&url)
+            .timeout(STAR_REQUEST_TIMEOUT)
             .json(&QueryRequest {
                 puuids: puuids.to_vec(),
             })

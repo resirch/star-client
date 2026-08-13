@@ -1,10 +1,14 @@
 use super::types::{EntitlementsResponse, LockfileData, RiotAuth};
 use anyhow::{Context, Result};
 use base64::Engine;
+use std::time::Duration;
+
+const LOCAL_RIOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn authenticate(lockfile: &LockfileData) -> Result<RiotAuth> {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
+        .timeout(LOCAL_RIOT_REQUEST_TIMEOUT)
         .build()?;
 
     let basic_auth =

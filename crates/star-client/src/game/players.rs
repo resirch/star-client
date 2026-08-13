@@ -3,7 +3,7 @@ use crate::riot::api::RiotApiClient;
 use crate::riot::types::*;
 use crate::stats::performance::extract_player_performance;
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const OVERLAY_WEAPONS: &[&str] = &[
     "Vandal", "Phantom", "Operator", "Sheriff", "Spectre", "Classic",
@@ -85,9 +85,10 @@ pub async fn fetch_pregame_players(
                 display.is_incognito = identity.incognito.unwrap_or(false);
             }
 
-            if let Some(char_id) = &p.character_i_d {
-                display.agent_name = api.get_agent_name(char_id);
-                display.agent_icon = api.get_agent_icon(char_id);
+            if let Some(char_id) = selected_character_id(p.character_i_d.as_deref()) {
+                let (agent_name, agent_icon) = api.resolve_agent(char_id).await;
+                display.agent_name = agent_name;
+                display.agent_icon = agent_icon;
             }
 
             display.team_id = team.team_i_d.clone().unwrap_or_default();
@@ -140,9 +141,10 @@ pub async fn fetch_coregame_players(
             display.is_incognito = identity.incognito.unwrap_or(false);
         }
 
-        if let Some(char_id) = &p.character_i_d {
-            display.agent_name = api.get_agent_name(char_id);
-            display.agent_icon = api.get_agent_icon(char_id);
+        if let Some(char_id) = selected_character_id(p.character_i_d.as_deref()) {
+            let (agent_name, agent_icon) = api.resolve_agent(char_id).await;
+            display.agent_name = agent_name;
+            display.agent_icon = agent_icon;
         }
 
         display.team_id = p.team_i_d.clone().unwrap_or_default();
@@ -180,17 +182,13 @@ pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [Playe
         return;
     }
 
-    let party_puuids: std::collections::HashSet<&str> = presences
+    let party_puuids: HashSet<&str> = presences
         .iter()
         .filter(|(_, presence)| presence.party_id == local_presence.party_id)
         .map(|(puuid, _)| puuid.as_str())
         .collect();
 
-    let party_number = players
-        .iter()
-        .find(|player| party_puuids.contains(player.puuid.as_str()) && player.party_number > 0)
-        .map(|player| player.party_number)
-        .unwrap_or(1);
+    let party_number = local_presence_party_number(players, local_puuid);
 
     for player in players.iter_mut() {
         if party_puuids.contains(player.puuid.as_str()) {
@@ -198,6 +196,22 @@ pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [Playe
             player.party_number = party_number;
         }
     }
+}
+
+fn local_presence_party_number(players: &[PlayerDisplayData], local_puuid: &str) -> i32 {
+    players
+        .iter()
+        .find(|player| player.puuid == local_puuid && player.party_number > 0)
+        .map(|player| player.party_number)
+        .unwrap_or_else(|| {
+            players
+                .iter()
+                .map(|player| player.party_number)
+                .max()
+                .unwrap_or(0)
+                + 1
+        })
+        .max(1)
 }
 
 pub async fn fetch_menu_party_players(api: &RiotApiClient) -> Result<Vec<PlayerDisplayData>> {
@@ -243,6 +257,10 @@ pub async fn fetch_menu_party_players(api: &RiotApiClient) -> Result<Vec<PlayerD
     }
 
     Ok(players)
+}
+
+fn selected_character_id(id: Option<&str>) -> Option<&str> {
+    id.map(str::trim).filter(|id| !id.is_empty())
 }
 
 fn build_basic_player(
@@ -500,6 +518,27 @@ fn apply_competitive_update(player: &mut PlayerDisplayData, update: &Competitive
     player.earned_rr = earned_rr_from_update(update).unwrap_or(0);
     player.afk_penalty = update.afk_penalty.unwrap_or(0);
     player.has_comp_update = true;
+
+    // The mmr/v1/players endpoint returns 404 for every player while a match is
+    // active, so fall back to the latest competitive update for the current rank
+    // when MMR did not provide one.
+    if player.current_rank == 0 {
+        let tier = update
+            .tier_after_update
+            .or(update.competitive_tier)
+            .unwrap_or(0);
+        if tier > 0 {
+            player.current_rank = tier;
+            player.rank_name = rank_name(tier).to_string();
+            if let Some(rr) = update.ranked_rating_after_update.or(update.ranking_in_tier) {
+                player.rr = rr;
+            }
+            if tier > player.peak_rank {
+                player.peak_rank = tier;
+                player.peak_rank_name = rank_name(tier).to_string();
+            }
+        }
+    }
 }
 
 fn earned_rr_from_update(update: &CompetitiveUpdate) -> Option<i32> {
@@ -744,8 +783,8 @@ fn standard_skin_name(weapon_name: &str) -> String {
 mod tests {
     use super::{
         apply_competitive_update, build_season_lookup, earned_rr_from_update,
-        extract_latest_comp_update, extract_rank_data, normalize_overlay_weapon,
-        preferred_recent_match_id, SeasonLookup,
+        extract_latest_comp_update, extract_rank_data, local_presence_party_number,
+        normalize_overlay_weapon, preferred_recent_match_id, selected_character_id, SeasonLookup,
     };
     use crate::riot::types::{
         CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason, MmrResponse,
@@ -753,6 +792,59 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn selected_character_id_ignores_unpicked_agents() {
+        assert_eq!(selected_character_id(None), None);
+        assert_eq!(selected_character_id(Some("")), None);
+        assert_eq!(selected_character_id(Some("   ")), None);
+        assert_eq!(
+            selected_character_id(Some("add6443a-41bd-e414-f6ad-e58d267f4e95")),
+            Some("add6443a-41bd-e414-f6ad-e58d267f4e95")
+        );
+    }
+
+    #[test]
+    fn local_presence_party_number_uses_next_available_number() {
+        let players = vec![
+            PlayerDisplayData {
+                puuid: "local".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "party-mate".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-party-a".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-party-b".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(local_presence_party_number(&players, "local"), 2);
+    }
+
+    #[test]
+    fn local_presence_party_number_keeps_existing_local_party_number() {
+        let players = vec![
+            PlayerDisplayData {
+                puuid: "local".into(),
+                party_number: 3,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-party".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(local_presence_party_number(&players, "local"), 3);
+    }
 
     #[test]
     fn finds_previous_rank_when_current_act_is_last() {

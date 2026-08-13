@@ -40,6 +40,10 @@ pub fn name_service(auth: &RiotAuth) -> String {
     format!("{}/name-service/v2/players", pd_base(auth))
 }
 
+pub fn player_session(auth: &RiotAuth, puuid: &str) -> String {
+    format!("{}/session/v1/sessions/{}", glz_base(auth), puuid)
+}
+
 pub fn pregame_player(auth: &RiotAuth, puuid: &str) -> String {
     format!("{}/pregame/v1/players/{}", glz_base(auth), puuid)
 }

@@ -76,6 +76,15 @@ pub struct PrivatePresence {
     pub party_version: i64,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerSessionResponse {
+    #[serde(default)]
+    pub loop_state: String,
+    #[serde(default)]
+    pub loop_state_metadata: String,
+}
+
 // --- MMR / Rank ---
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -494,6 +503,8 @@ pub struct PlayerDisplayData {
     pub last_seen_at: String,
     pub last_seen_game_name: String,
     pub last_seen_tag_line: String,
+    pub last_seen_map_name: String,
+    pub last_seen_agent_name: String,
     pub last_seen_kd: Option<f64>,
     #[serde(skip)]
     pub enriched: bool,

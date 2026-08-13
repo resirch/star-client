@@ -23,6 +23,8 @@ const RANK_CELL_GAP: f32 = 4.0;
 const OVERLAY_STAR_TEXTURE_SIZE: u32 = 64;
 const STAR_ICON_INSET: f32 = 0.75;
 const PLAYER_STAR_SIZE: f32 = 14.0;
+const PARTY_OUTLINE_INSET: f32 = 1.0;
+const PARTY_OUTLINE_OPACITY: f32 = 0.25;
 
 thread_local! {
     static STAR_ICON_TEXTURE: RefCell<Option<Option<egui::TextureHandle>>> = const { RefCell::new(None) };
@@ -116,37 +118,33 @@ pub fn render_overlay(
 
                         if !allies.is_empty() {
                             team_label(ui, "YOUR TEAM", allies[0].team_id.as_str());
-                            for p in &allies {
-                                player_row(
-                                    ui,
-                                    p,
-                                    config,
-                                    layout.widths,
-                                    local_party_id,
-                                    local_party_number,
-                                    true,
-                                    layout.show_leaderboard,
-                                    layout.show_skin,
-                                );
-                            }
+                            player_rows(
+                                ui,
+                                &allies,
+                                config,
+                                layout.widths,
+                                local_party_id,
+                                local_party_number,
+                                true,
+                                layout.show_leaderboard,
+                                layout.show_skin,
+                            );
                         }
 
                         if !enemies.is_empty() {
                             ui.add_space(6.0);
                             team_label(ui, "ENEMY TEAM", enemies[0].team_id.as_str());
-                            for p in &enemies {
-                                player_row(
-                                    ui,
-                                    p,
-                                    config,
-                                    layout.widths,
-                                    local_party_id,
-                                    local_party_number,
-                                    false,
-                                    layout.show_leaderboard,
-                                    layout.show_skin,
-                                );
-                            }
+                            player_rows(
+                                ui,
+                                &enemies,
+                                config,
+                                layout.widths,
+                                local_party_id,
+                                local_party_number,
+                                false,
+                                layout.show_leaderboard,
+                                layout.show_skin,
+                            );
                         }
 
                         if config.features.last_played {
@@ -788,6 +786,38 @@ fn team_label(ui: &mut Ui, text: &str, team_id: &str) {
     ui.add_space(1.0);
 }
 
+fn player_rows(
+    ui: &mut Ui,
+    players: &[&PlayerDisplayData],
+    config: &Config,
+    widths: ColumnWidths,
+    local_party_id: &str,
+    local_party_number: i32,
+    is_ally: bool,
+    show_leaderboard: bool,
+    show_skin: bool,
+) {
+    let players = party_grouped_players(players, local_party_id, local_party_number);
+    let groups = party_row_groups(&players, local_party_id, local_party_number);
+    let mut row_rects = Vec::with_capacity(players.len());
+
+    for p in &players {
+        row_rects.push(player_row(
+            ui,
+            p,
+            config,
+            widths,
+            local_party_id,
+            local_party_number,
+            is_ally,
+            show_leaderboard,
+            show_skin,
+        ));
+    }
+
+    paint_party_outlines(ui, &row_rects, &groups);
+}
+
 fn player_row(
     ui: &mut Ui,
     p: &PlayerDisplayData,
@@ -798,7 +828,7 @@ fn player_row(
     is_ally: bool,
     show_leaderboard: bool,
     show_skin: bool,
-) {
+) -> Rect {
     let c = &config.columns;
     let bg = if is_ally {
         theme::ROW_BG_ALLY
@@ -807,26 +837,15 @@ fn player_row(
     };
     let origin = ui.cursor().min;
     let full_w = ui.max_rect().width();
-    ui.painter().rect_filled(
-        Rect::from_min_size(origin, Vec2::new(full_w, ROW_H)),
-        2.0,
-        bg,
-    );
+    let row_rect = Rect::from_min_size(origin, Vec2::new(full_w, ROW_H));
+    ui.painter().rect_filled(row_rect, 2.0, bg);
 
     ui.horizontal(|ui| {
         ui.set_height(ROW_H);
         let f = theme::body_font();
         let loading = loading_dots(ui.ctx());
 
-        // Party bar
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(widths.party, ROW_H), egui::Sense::hover());
-        let party_number = party_indicator_number(p, local_party_id, local_party_number);
-        if party_number > 0 {
-            let bar = Rect::from_center_size(rect.center(), Vec2::new(4.0, ROW_H - 4.0));
-            ui.painter()
-                .rect_filled(bar, 2.0, theme::party_color(party_number));
-        }
+        let _ = ui.allocate_exact_size(Vec2::new(widths.party, ROW_H), egui::Sense::hover());
 
         // Star
         let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.star, ROW_H), egui::Sense::hover());
@@ -986,6 +1005,8 @@ fn player_row(
             );
         }
     });
+
+    row_rect
 }
 
 fn render_title_star_label(ui: &mut Ui) {
@@ -1616,6 +1637,114 @@ fn shares_local_party(
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum PartyGroupKey<'a> {
+    Id(&'a str),
+    Number(i32),
+}
+
+fn party_grouped_players<'a>(
+    players: &[&'a PlayerDisplayData],
+    local_party_id: &str,
+    local_party_number: i32,
+) -> Vec<&'a PlayerDisplayData> {
+    let mut ordered = Vec::with_capacity(players.len());
+    let mut emitted_parties = Vec::new();
+
+    for player in players {
+        let Some(party_key) = party_group_key(player, local_party_id, local_party_number) else {
+            ordered.push(*player);
+            continue;
+        };
+
+        if emitted_parties.contains(&party_key) {
+            continue;
+        }
+
+        ordered.extend(players.iter().copied().filter(|candidate| {
+            party_group_key(candidate, local_party_id, local_party_number).as_ref()
+                == Some(&party_key)
+        }));
+        emitted_parties.push(party_key);
+    }
+
+    ordered
+}
+
+fn party_row_groups(
+    players: &[&PlayerDisplayData],
+    local_party_id: &str,
+    local_party_number: i32,
+) -> Vec<(usize, usize, i32)> {
+    let mut groups = Vec::new();
+    let mut start = 0usize;
+    let mut current_party_key = None;
+    let mut current_party_number = 0;
+
+    for (index, player) in players.iter().enumerate() {
+        let party_key = party_group_key(player, local_party_id, local_party_number);
+        let party_number = party_indicator_number(player, local_party_id, local_party_number);
+        if index == 0 {
+            current_party_key = party_key;
+            current_party_number = party_number;
+            continue;
+        }
+
+        if party_key != current_party_key {
+            if current_party_key.is_some() && index - start > 1 {
+                groups.push((start, index - 1, current_party_number));
+            }
+            start = index;
+            current_party_key = party_key;
+            current_party_number = party_number;
+        }
+    }
+
+    if current_party_key.is_some() && players.len().saturating_sub(start) > 1 {
+        groups.push((start, players.len() - 1, current_party_number));
+    }
+
+    groups
+}
+
+fn paint_party_outlines(ui: &mut Ui, row_rects: &[Rect], groups: &[(usize, usize, i32)]) {
+    for &(start, end, party_number) in groups {
+        let Some(first) = row_rects.get(start) else {
+            continue;
+        };
+        let Some(last) = row_rects.get(end) else {
+            continue;
+        };
+
+        let rect = Rect::from_min_max(first.min, last.max).shrink(PARTY_OUTLINE_INSET);
+        ui.painter().rect_stroke(
+            rect,
+            3.0,
+            Stroke::new(
+                1.0,
+                theme::party_color(party_number).gamma_multiply(PARTY_OUTLINE_OPACITY),
+            ),
+        );
+    }
+}
+
+fn party_group_key<'a>(
+    player: &'a PlayerDisplayData,
+    local_party_id: &str,
+    local_party_number: i32,
+) -> Option<PartyGroupKey<'a>> {
+    let party_number = party_indicator_number(player, local_party_id, local_party_number);
+    if party_number <= 0 {
+        return None;
+    }
+
+    if !player.party_id.is_empty() {
+        Some(PartyGroupKey::Id(player.party_id.as_str()))
+    } else {
+        Some(PartyGroupKey::Number(party_number))
+    }
+}
+
 fn party_indicator_number(
     player: &PlayerDisplayData,
     local_party_id: &str,
@@ -1634,14 +1763,14 @@ fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String
     let previous_name = display_full_name(&player.last_seen_game_name, &player.last_seen_tag_line);
     let current_name = display_full_name(&player.game_name, &player.tag_line);
     let relation = team_relation_label(player, my_team);
-    let agent = if player.agent_name.is_empty() {
+    let current_agent = if player.agent_name.is_empty() {
         "unknown agent".to_string()
     } else {
         player.agent_name.clone()
     };
 
     let identity = if player.is_incognito {
-        format!("{agent} on {relation}")
+        format!("{current_agent} on {relation}")
     } else {
         match (&current_name, &previous_name) {
             (Some(current_name), _) => current_name.clone(),
@@ -1655,6 +1784,16 @@ fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String
             Some(previous_name.clone())
         }
         _ => None,
+    };
+    let last_map = if player.last_seen_map_name.trim().is_empty() {
+        "unknown map"
+    } else {
+        player.last_seen_map_name.trim()
+    };
+    let last_agent = if player.last_seen_agent_name.trim().is_empty() {
+        "unknown agent"
+    } else {
+        player.last_seen_agent_name.trim()
     };
 
     let age = format_history_age(&player.last_seen_at)
@@ -1673,10 +1812,10 @@ fn format_last_seen_summary(player: &PlayerDisplayData, my_team: &str) -> String
 
     if let Some(previous_identity) = previous_identity {
         format!(
-            "Last seen {identity} (previously {previous_identity}){age}{kd_suffix} {seen_count}"
+            "Last seen {identity} on {last_map} as {last_agent} (previously {previous_identity}){age}{kd_suffix} {seen_count}"
         )
     } else {
-        format!("Last seen {identity}{age}{kd_suffix} {seen_count}")
+        format!("Last seen {identity} on {last_map} as {last_agent}{age}{kd_suffix} {seen_count}")
     }
 }
 
@@ -1804,9 +1943,9 @@ fn is_standard_weapon_name(raw_skin_name: &str, weapon_name: &str) -> bool {
 mod tests {
     use super::{
         earned_rr_column_value, format_last_seen_summary, format_rank_parts, format_server_id,
-        format_skin_name, leaderboard_column_visible, local_party_marker, party_indicator_number,
-        player_display_name, rr_column_visible, shares_local_party, skin_column_visible,
-        split_players_by_team, winrate_column_value,
+        format_skin_name, leaderboard_column_visible, local_party_marker, party_grouped_players,
+        party_indicator_number, party_row_groups, player_display_name, rr_column_visible,
+        shares_local_party, skin_column_visible, split_players_by_team, winrate_column_value,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
@@ -2041,13 +2180,16 @@ mod tests {
             last_seen_at: "2026-03-09 12:00:00".into(),
             last_seen_game_name: "Example".into(),
             last_seen_tag_line: "TAG".into(),
+            last_seen_map_name: "Ascent".into(),
+            last_seen_agent_name: "Raze".into(),
             last_seen_kd: Some(1.37),
             ..Default::default()
         };
 
         let summary = format_last_seen_summary(&player, "Blue");
 
-        assert!(summary.contains("Last seen Jett on enemy team (previously Example#TAG)"));
+        assert!(summary
+            .contains("Last seen Jett on enemy team on Ascent as Raze (previously Example#TAG)"));
         assert!(summary.contains("KD 1.37"));
         assert!(summary.contains("(3 times)"));
         assert!(!summary.contains("HiddenCurrent#NOW"));
@@ -2065,13 +2207,15 @@ mod tests {
             last_seen_at: "2026-03-09 12:00:00".into(),
             last_seen_game_name: "Example".into(),
             last_seen_tag_line: "TAG".into(),
+            last_seen_map_name: "Bind".into(),
+            last_seen_agent_name: "Omen".into(),
             last_seen_kd: Some(0.84),
             ..Default::default()
         };
 
         let summary = format_last_seen_summary(&player, "Blue");
 
-        assert!(summary.contains("Last seen Current#NOW (previously Example#TAG)"));
+        assert!(summary.contains("Last seen Current#NOW on Bind as Omen (previously Example#TAG)"));
         assert!(summary.contains("KD 0.84"));
         assert!(summary.contains("(2 times)"));
         assert!(!summary.contains("your team"));
@@ -2088,12 +2232,14 @@ mod tests {
             last_seen_at: "2026-03-09 12:00:00".into(),
             last_seen_game_name: "Example".into(),
             last_seen_tag_line: "TAG".into(),
+            last_seen_map_name: "Haven".into(),
+            last_seen_agent_name: "Sage".into(),
             ..Default::default()
         };
 
         let summary = format_last_seen_summary(&player, "Blue");
 
-        assert!(summary.contains("Last seen Jett on your team"));
+        assert!(summary.contains("Last seen Jett on your team on Haven as Sage"));
         assert!(summary.contains("(1 time)"));
         assert!(!summary.contains("previously"));
         assert!(!summary.contains("Example#TAG"));
@@ -2188,5 +2334,139 @@ mod tests {
         assert_eq!(party_indicator_number(&teammate, "live-party", 2), 2);
         assert_eq!(party_indicator_number(&teammate, "live-party", 0), 1);
         assert_eq!(party_indicator_number(&outsider, "live-party", 2), 0);
+    }
+
+    #[test]
+    fn party_row_groups_wraps_contiguous_party_runs() {
+        let players = vec![
+            PlayerDisplayData {
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData::default(),
+            PlayerDisplayData {
+                party_number: 2,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                party_number: 2,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                party_number: 2,
+                ..Default::default()
+            },
+        ];
+        let refs = players.iter().collect::<Vec<_>>();
+
+        assert_eq!(party_row_groups(&refs, "", 0), vec![(0, 1, 1), (3, 5, 2)]);
+    }
+
+    #[test]
+    fn party_grouped_players_makes_party_members_adjacent() {
+        let players = vec![
+            PlayerDisplayData {
+                puuid: "party-a".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "solo".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "party-b".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-party-a".into(),
+                party_number: 2,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-party-b".into(),
+                party_number: 2,
+                ..Default::default()
+            },
+        ];
+        let refs = players.iter().collect::<Vec<_>>();
+
+        let ordered = party_grouped_players(&refs, "", 0);
+        let ordered_ids = ordered
+            .iter()
+            .map(|player| player.puuid.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ordered_ids,
+            vec![
+                "party-a",
+                "party-b",
+                "solo",
+                "other-party-a",
+                "other-party-b"
+            ]
+        );
+        assert_eq!(
+            party_row_groups(&ordered, "", 0),
+            vec![(0, 1, 1), (3, 4, 2)]
+        );
+    }
+
+    #[test]
+    fn party_grouped_players_keeps_different_party_ids_separate_with_same_number() {
+        let players = vec![
+            PlayerDisplayData {
+                puuid: "local".into(),
+                party_id: "live-party".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-party-a".into(),
+                party_id: "party_1".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "party-mate".into(),
+                party_id: "live-party".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        let refs = players.iter().collect::<Vec<_>>();
+
+        let ordered = party_grouped_players(&refs, "live-party", 1);
+        let ordered_ids = ordered
+            .iter()
+            .map(|player| player.puuid.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ordered_ids, vec!["local", "party-mate", "other-party-a"]);
+        assert_eq!(party_row_groups(&ordered, "live-party", 1), vec![(0, 1, 1)]);
+    }
+
+    #[test]
+    fn party_row_groups_ignores_singletons() {
+        let players = [
+            PlayerDisplayData {
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData::default(),
+            PlayerDisplayData {
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        let refs = players.iter().collect::<Vec<_>>();
+
+        assert!(party_row_groups(&refs, "", 0).is_empty());
     }
 }

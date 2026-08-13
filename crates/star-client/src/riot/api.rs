@@ -1,6 +1,9 @@
 use super::{auth, endpoints, lockfile, types::*};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+const RIOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct RiotApiClient {
@@ -9,6 +12,8 @@ pub struct RiotApiClient {
     client_version: String,
     content_cache: Option<ContentResponse>,
     agent_cache: HashMap<String, AgentData>,
+    agent_cache_fetched_at: Option<Instant>,
+    unknown_agent_uuids: HashSet<String>,
     skin_cache: HashMap<String, SkinLevelInfo>,
 }
 
@@ -16,6 +21,7 @@ impl RiotApiClient {
     pub fn new(auth: RiotAuth) -> Result<Self> {
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
+            .timeout(RIOT_REQUEST_TIMEOUT)
             .build()?;
 
         Ok(Self {
@@ -24,6 +30,8 @@ impl RiotApiClient {
             client_version: String::new(),
             content_cache: None,
             agent_cache: HashMap::new(),
+            agent_cache_fetched_at: None,
+            unknown_agent_uuids: HashSet::new(),
             skin_cache: HashMap::new(),
         })
     }
@@ -145,12 +153,22 @@ impl RiotApiClient {
         let resp_text = response.text().await?;
 
         if !status.is_success() {
-            tracing::warn!(
-                "MMR request for {} returned HTTP {}: {}",
-                &puuid[..8.min(puuid.len())],
-                status.as_u16(),
-                &resp_text[..500.min(resp_text.len())]
-            );
+            // Riot returns 404 on this endpoint for every player during an
+            // active match; ranks are sourced from competitive updates instead,
+            // so this is expected rather than an error.
+            if status.as_u16() == 404 {
+                tracing::debug!(
+                    "MMR request for {} returned 404 (expected during an active match)",
+                    &puuid[..8.min(puuid.len())]
+                );
+            } else {
+                tracing::warn!(
+                    "MMR request for {} returned HTTP {}: {}",
+                    &puuid[..8.min(puuid.len())],
+                    status.as_u16(),
+                    &resp_text[..500.min(resp_text.len())]
+                );
+            }
             return Ok(MmrResponse::default());
         }
 
@@ -241,6 +259,22 @@ impl RiotApiClient {
         Ok(resp)
     }
 
+    // --- Player Session ---
+
+    pub async fn get_player_session(&self) -> Result<PlayerSessionResponse> {
+        let url = endpoints::player_session(&self.auth, &self.auth.puuid);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.riot_headers())
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp)
+    }
+
     // --- Pregame ---
 
     pub async fn get_pregame_player(&self) -> Result<PregamePlayerResponse> {
@@ -251,6 +285,7 @@ impl RiotApiClient {
             .headers(self.riot_headers())
             .send()
             .await?
+            .error_for_status()?
             .json()
             .await?;
         Ok(resp)
@@ -279,6 +314,7 @@ impl RiotApiClient {
             .headers(self.riot_headers())
             .send()
             .await?
+            .error_for_status()?
             .json()
             .await?;
         Ok(resp)
@@ -365,9 +401,61 @@ impl RiotApiClient {
     }
 
     pub async fn fetch_agents(&mut self) -> Result<()> {
-        if !self.agent_cache.is_empty() {
-            return Ok(());
+        self.fetch_agents_if_needed(false).await
+    }
+
+    /// Resolves a character UUID to a display name and icon.
+    ///
+    /// Empty IDs are expected during pregame before a player locks an agent.
+    /// Unknown IDs trigger a cache refresh so newly shipped agents are picked up
+    /// without restarting the client.
+    pub async fn resolve_agent(&mut self, uuid: &str) -> (String, Option<String>) {
+        let uuid = uuid.trim();
+        if uuid.is_empty() {
+            return (String::new(), None);
         }
+
+        let key = uuid.to_lowercase();
+        if !self.agent_cache.contains_key(&key) {
+            if let Err(e) = self.fetch_agents_if_needed(true).await {
+                tracing::warn!("Failed to refresh agent cache: {}", e);
+            }
+        }
+
+        if let Some(agent) = self.agent_cache.get(&key) {
+            return (agent.display_name.clone(), agent.display_icon.clone());
+        }
+
+        if self.unknown_agent_uuids.insert(key) {
+            tracing::warn!(
+                "Agent UUID {} not found in cache ({} agents cached)",
+                uuid,
+                self.agent_cache.len()
+            );
+        }
+
+        ("Unknown".into(), None)
+    }
+
+    async fn fetch_agents_if_needed(&mut self, refresh_if_stale: bool) -> Result<()> {
+        const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+        if !self.agent_cache.is_empty() {
+            if !refresh_if_stale {
+                return Ok(());
+            }
+            if self
+                .agent_cache_fetched_at
+                .is_some_and(|fetched_at| fetched_at.elapsed() < MIN_REFRESH_INTERVAL)
+            {
+                return Ok(());
+            }
+        }
+
+        self.refresh_agents().await
+    }
+
+    async fn refresh_agents(&mut self) -> Result<()> {
         tracing::debug!("Fetching agent data from valorant-api.com");
         let resp: ValorantApiResponse<Vec<AgentData>> = self
             .http
@@ -378,33 +466,17 @@ impl RiotApiClient {
             .await?;
         if let Some(agents) = resp.data {
             tracing::debug!("Loaded {} agents into cache", agents.len());
+            self.agent_cache.clear();
             for agent in agents {
-                self.agent_cache.insert(agent.uuid.to_lowercase(), agent);
+                let key = agent.uuid.to_lowercase();
+                self.unknown_agent_uuids.remove(&key);
+                self.agent_cache.insert(key, agent);
             }
+            self.agent_cache_fetched_at = Some(Instant::now());
         } else {
             tracing::warn!("Agent API returned status {} but no data", resp.status);
         }
         Ok(())
-    }
-
-    pub fn get_agent_name(&self, uuid: &str) -> String {
-        self.agent_cache
-            .get(&uuid.to_lowercase())
-            .map(|a| a.display_name.clone())
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    "Agent UUID {} not found in cache ({} agents cached)",
-                    uuid,
-                    self.agent_cache.len()
-                );
-                "Unknown".into()
-            })
-    }
-
-    pub fn get_agent_icon(&self, uuid: &str) -> Option<String> {
-        self.agent_cache
-            .get(&uuid.to_lowercase())
-            .and_then(|a| a.display_icon.clone())
     }
 
     pub async fn fetch_skin_levels(&mut self) -> Result<()> {

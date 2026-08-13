@@ -1,10 +1,12 @@
 use crate::riot::api::RiotApiClient;
 use anyhow::Result;
 
+#[derive(Clone)]
 pub struct MapInfo {
     pub name: String,
 }
 
+#[derive(Clone)]
 pub struct MatchContext {
     pub map: MapInfo,
     pub queue: String,

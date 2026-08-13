@@ -26,6 +26,11 @@ pub struct AppState {
 }
 
 const WAITING_FOR_CLIENT_DEBOUNCE_POLLS: u8 = 3;
+const MENU_DECISION_LOG_INTERVAL_POLLS: u16 = 6;
+const DETECTION_AUTH_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+const PARTY_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PARTY_PRESENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const DISCORD_RPC_UPDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl AppState {
     pub fn new(config: Config) -> Self {
@@ -46,6 +51,7 @@ pub async fn run_data_loop(
     api: Arc<RwLock<RiotApiClient>>,
     star_client: Arc<StarClient>,
     quit_flag: Arc<AtomicBool>,
+    poll_heartbeat: Arc<parking_lot::Mutex<std::time::Instant>>,
 ) {
     let history = {
         let data_dir = Config::data_dir();
@@ -57,12 +63,15 @@ pub async fn run_data_loop(
         let state = app_state.read().await;
         state.config.behavior.discord_rpc
     };
+    let mut discord_rpc_available = discord_rpc_enabled;
     if discord_rpc_enabled {
         discord.connect();
     }
 
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut waiting_for_client_polls = 0u8;
+    let mut menu_detection_polls = 0u16;
+    let mut last_detection_auth_refresh = None;
     let mut selected_overlay_weapon = {
         let state = app_state.read().await;
         players::normalize_overlay_weapon(&state.config.overlay.weapon).to_string()
@@ -70,6 +79,7 @@ pub async fn run_data_loop(
 
     loop {
         poll_interval.tick().await;
+        *poll_heartbeat.lock() = std::time::Instant::now();
 
         if quit_flag.load(Ordering::Relaxed) {
             discord.disconnect();
@@ -77,7 +87,9 @@ pub async fn run_data_loop(
         }
 
         let mut api_guard = api.write().await;
-        let detected_state = detect_game_state_with_reauth(&mut api_guard).await;
+        let detection =
+            detect_game_state_with_reauth(&mut api_guard, &mut last_detection_auth_refresh).await;
+        let detected_state = detection.state.clone();
         let previous_state = {
             let state = app_state.read().await;
             state.game_state.clone()
@@ -89,11 +101,47 @@ pub async fn run_data_loop(
                 state.local_puuid = current_puuid;
             }
         }
+        let debounce_candidate = should_debounce_detected_state(&previous_state, &detected_state);
         let new_state = stabilize_game_state(
             &previous_state,
             detected_state,
             &mut waiting_for_client_polls,
         );
+        if matches!(detection.state, GameState::Menu) {
+            menu_detection_polls = menu_detection_polls.saturating_add(1);
+        } else {
+            menu_detection_polls = 0;
+        }
+
+        let debounce_kept_previous = new_state != detection.state;
+        let accepted_state_changed = new_state != previous_state;
+        let periodic_menu_log = matches!(detection.state, GameState::Menu)
+            && (menu_detection_polls == 1
+                || menu_detection_polls.is_multiple_of(MENU_DECISION_LOG_INTERVAL_POLLS));
+        if accepted_state_changed || debounce_kept_previous || periodic_menu_log {
+            let debounce_status = if !debounce_candidate {
+                "not-applied"
+            } else if debounce_kept_previous {
+                "kept-previous"
+            } else {
+                "threshold-accepted"
+            };
+            tracing::info!(
+                "Game state decision: previous={:?}, detected={:?}, accepted={:?}, source={}, debounce={} ({}/{}), evidence={}",
+                previous_state,
+                detection.state,
+                new_state,
+                detection.source,
+                debounce_status,
+                if debounce_candidate {
+                    waiting_for_client_polls
+                } else {
+                    0
+                },
+                WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+                detection.evidence
+            );
+        }
 
         let config = {
             let state = app_state.read().await;
@@ -109,9 +157,11 @@ pub async fn run_data_loop(
             discord_rpc_enabled = config.behavior.discord_rpc;
             if discord_rpc_enabled {
                 discord.connect();
+                discord_rpc_available = true;
             } else {
                 discord.clear();
                 discord.disconnect();
+                discord_rpc_available = false;
             }
         }
 
@@ -154,6 +204,25 @@ pub async fn run_data_loop(
             !match_id.is_empty() && match_id != state.last_match_id
         };
 
+        if is_new_match {
+            if let (
+                GameState::Pregame {
+                    match_id: previous_match_id,
+                },
+                GameState::Ingame { .. },
+            ) = (&previous_state, &new_state)
+            {
+                if let Some(history) = &history {
+                    if let Err(error) = history.continue_match(previous_match_id, &match_id) {
+                        tracing::warn!(
+                            "Failed to continue encounter history from pregame to ingame: {}",
+                            error
+                        );
+                    }
+                }
+            }
+        }
+
         let should_fetch_initial_players = should_fetch_initial_player_snapshot(
             &new_state,
             state_changed,
@@ -192,10 +261,25 @@ pub async fn run_data_loop(
                 is_ingame_match_id_change(&previous_state, &new_state)
                     && !state.players.is_empty()
                     && (players_data.is_empty()
-                        || same_player_roster(&state.players, &players_data))
+                        || same_player_roster(&state.players, &players_data)
+                        || player_roster_is_subset(&state.players, &players_data))
             };
 
             if side_swap_only {
+                if let (
+                    Some(history),
+                    GameState::Ingame {
+                        match_id: previous_match_id,
+                    },
+                ) = (&history, &previous_state)
+                {
+                    if let Err(error) = history.continue_match(previous_match_id, &match_id) {
+                        tracing::warn!(
+                            "Failed to continue encounter history across side swap: {}",
+                            error
+                        );
+                    }
+                }
                 let ctx = match_data::fetch_coregame_context(&api_guard, &match_id)
                     .await
                     .ok();
@@ -233,14 +317,29 @@ pub async fn run_data_loop(
             }
 
             if new_state.is_in_match() && !players_data.is_empty() {
-                if config.behavior.party_finder {
-                    party::detect_parties(&api_guard, &mut players_data).await;
+                if config.behavior.party_finder
+                    && tokio::time::timeout(
+                        PARTY_LOOKUP_TIMEOUT,
+                        party::detect_parties(&api_guard, &mut players_data),
+                    )
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("Party history lookup timed out; showing roster without it");
                 }
 
                 // Always mark party members from presences after party finder so
                 // the local party keeps a visible indicator and incognito
                 // teammates have their names shown.
-                players::mark_party_from_presences(&api_guard, &mut players_data).await;
+                if tokio::time::timeout(
+                    PARTY_PRESENCE_TIMEOUT,
+                    players::mark_party_from_presences(&api_guard, &mut players_data),
+                )
+                .await
+                .is_err()
+                {
+                    tracing::warn!("Party presence lookup timed out; showing roster without it");
+                }
             }
 
             if config.star.enabled {
@@ -278,13 +377,30 @@ pub async fn run_data_loop(
                     HashMap::new()
                 }
             };
+            let ctx = match &new_state {
+                GameState::Pregame { match_id } => {
+                    match_data::fetch_pregame_context(&api_guard, match_id)
+                        .await
+                        .ok()
+                }
+                GameState::Ingame { match_id } => {
+                    match_data::fetch_coregame_context(&api_guard, match_id)
+                        .await
+                        .ok()
+                }
+                _ => None,
+            };
+            let map_name = ctx
+                .as_ref()
+                .map(|context| context.map.name.as_str())
+                .unwrap_or("");
             if let Some(history) = &history {
                 for player in &mut players_data {
                     hydrate_player_history(
                         player,
                         &local_puuid,
                         &existing_players_by_puuid,
-                        history.encounter(&player.puuid),
+                        history.encounter(&player.puuid, &match_id),
                     );
                 }
 
@@ -297,8 +413,11 @@ pub async fn run_data_loop(
                     if is_new_match {
                         let _ = history.record_encounter(
                             &player.puuid,
+                            &match_id,
                             &player.game_name,
                             &player.tag_line,
+                            map_name,
+                            &player.agent_name,
                             update_identity,
                             previous_players_by_puuid
                                 .get(&player.puuid)
@@ -321,20 +440,6 @@ pub async fn run_data_loop(
                     }
                 }
             }
-
-            let ctx = match &new_state {
-                GameState::Pregame { match_id } => {
-                    match_data::fetch_pregame_context(&api_guard, match_id)
-                        .await
-                        .ok()
-                }
-                GameState::Ingame { match_id } => {
-                    match_data::fetch_coregame_context(&api_guard, match_id)
-                        .await
-                        .ok()
-                }
-                _ => None,
-            };
 
             // Show basic info immediately
             {
@@ -547,13 +652,51 @@ pub async fn run_data_loop(
             let mut refreshed_players =
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
-                players::mark_party_from_presences(&api_guard, &mut refreshed_players).await;
+                if config.behavior.party_finder
+                    && tokio::time::timeout(
+                        PARTY_LOOKUP_TIMEOUT,
+                        party::detect_parties(&api_guard, &mut refreshed_players),
+                    )
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("Party history refresh timed out");
+                }
+                if tokio::time::timeout(
+                    PARTY_PRESENCE_TIMEOUT,
+                    players::mark_party_from_presences(&api_guard, &mut refreshed_players),
+                )
+                .await
+                .is_err()
+                {
+                    tracing::warn!("Party presence refresh timed out");
+                }
+                let (local_puuid, map_name) = {
+                    let state = app_state.read().await;
+                    (
+                        state.local_puuid.clone(),
+                        state
+                            .match_context
+                            .as_ref()
+                            .map(|context| context.map.name.clone())
+                            .unwrap_or_default(),
+                    )
+                };
+                if let Some(history) = &history {
+                    update_current_match_history_details(
+                        history,
+                        &refreshed_players,
+                        &local_puuid,
+                        match_id,
+                        &map_name,
+                    );
+                }
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id {
                     if state.players.is_empty() {
                         state.players = refreshed_players;
                     } else {
-                        merge_live_players(&mut state.players, refreshed_players);
+                        merge_match_players(&mut state.players, refreshed_players);
                     }
                 }
             }
@@ -562,12 +705,32 @@ pub async fn run_data_loop(
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
                 players::mark_party_from_presences(&api_guard, &mut refreshed_players).await;
+                let (local_puuid, map_name) = {
+                    let state = app_state.read().await;
+                    (
+                        state.local_puuid.clone(),
+                        state
+                            .match_context
+                            .as_ref()
+                            .map(|context| context.map.name.clone())
+                            .unwrap_or_default(),
+                    )
+                };
+                if let Some(history) = &history {
+                    update_current_match_history_details(
+                        history,
+                        &refreshed_players,
+                        &local_puuid,
+                        match_id,
+                        &map_name,
+                    );
+                }
                 let mut state = app_state.write().await;
                 if state.last_match_id == *match_id {
                     if state.players.is_empty() {
                         state.players = refreshed_players;
                     } else {
-                        merge_live_players(&mut state.players, refreshed_players);
+                        merge_match_players(&mut state.players, refreshed_players);
                     }
                 }
             }
@@ -641,24 +804,43 @@ pub async fn run_data_loop(
             }
         }
 
-        if discord_rpc_enabled {
+        if discord_rpc_enabled && discord_rpc_available {
             let state = app_state.read().await;
             let rank_name = state
                 .players
                 .first()
-                .map(|p| p.rank_name.as_str())
-                .unwrap_or("Unranked");
+                .map(|p| p.rank_name.clone())
+                .unwrap_or_else(|| "Unranked".to_string());
             let agent_name = state
                 .players
                 .first()
-                .map(|p| p.agent_name.as_str())
-                .unwrap_or("");
-            discord.update(
-                &state.game_state,
-                state.match_context.as_ref(),
-                rank_name,
-                agent_name,
-            );
+                .map(|p| p.agent_name.clone())
+                .unwrap_or_default();
+            let game_state = state.game_state.clone();
+            let match_context = state.match_context.clone();
+            drop(state);
+
+            let mut discord_client = std::mem::replace(&mut discord, DiscordRpc::new());
+            let update_task = tokio::task::spawn_blocking(move || {
+                discord_client.update(&game_state, match_context.as_ref(), &rank_name, &agent_name);
+                discord_client
+            });
+
+            match tokio::time::timeout(DISCORD_RPC_UPDATE_TIMEOUT, update_task).await {
+                Ok(Ok(updated_client)) => {
+                    discord = updated_client;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!("Discord RPC update task failed: {}", error);
+                    discord_rpc_available = false;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Discord RPC update timed out; disabling it until settings change or restart"
+                    );
+                    discord_rpc_available = false;
+                }
+            }
         }
     }
 }
@@ -712,6 +894,32 @@ fn merge_live_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<Play
     *existing = merged;
 }
 
+fn merge_match_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<PlayerDisplayData>) {
+    let refreshed_puuids: HashMap<&str, ()> = refreshed
+        .iter()
+        .filter(|player| !player.puuid.is_empty())
+        .map(|player| (player.puuid.as_str(), ()))
+        .collect();
+    let missing_players: Vec<PlayerDisplayData> = existing
+        .iter()
+        .filter(|player| {
+            !player.puuid.is_empty() && !refreshed_puuids.contains_key(player.puuid.as_str())
+        })
+        .cloned()
+        .collect();
+
+    if !missing_players.is_empty() {
+        tracing::debug!(
+            "Partial live roster response omitted {} of {} known players; preserving them",
+            missing_players.len(),
+            existing.len()
+        );
+    }
+
+    merge_live_players(existing, refreshed);
+    existing.extend(missing_players);
+}
+
 fn merge_or_swap_side_change(
     existing: &mut Vec<PlayerDisplayData>,
     refreshed: Vec<PlayerDisplayData>,
@@ -721,20 +929,35 @@ fn merge_or_swap_side_change(
         return;
     }
 
+    let refreshed_puuids: HashMap<String, ()> = refreshed
+        .iter()
+        .filter(|player| !player.puuid.is_empty())
+        .map(|player| (player.puuid.clone(), ()))
+        .collect();
     let refreshed_has_team_changes = has_team_assignment_changes(existing, &refreshed);
-    merge_live_players(existing, refreshed);
-    if !refreshed_has_team_changes {
+    merge_match_players(existing, refreshed);
+    if refreshed_has_team_changes {
+        for player in existing.iter_mut() {
+            if !refreshed_puuids.contains_key(&player.puuid) {
+                swap_team_color(player);
+            }
+        }
+    } else {
         swap_team_colors(existing);
     }
 }
 
 fn swap_team_colors(players: &mut [PlayerDisplayData]) {
     for player in players {
-        if player.team_id.eq_ignore_ascii_case("red") {
-            player.team_id = "Blue".to_string();
-        } else if player.team_id.eq_ignore_ascii_case("blue") {
-            player.team_id = "Red".to_string();
-        }
+        swap_team_color(player);
+    }
+}
+
+fn swap_team_color(player: &mut PlayerDisplayData) {
+    if player.team_id.eq_ignore_ascii_case("red") {
+        player.team_id = "Blue".to_string();
+    } else if player.team_id.eq_ignore_ascii_case("blue") {
+        player.team_id = "Red".to_string();
     }
 }
 
@@ -753,6 +976,25 @@ fn same_player_roster(existing: &[PlayerDisplayData], refreshed: &[PlayerDisplay
         && refreshed
             .iter()
             .all(|player| existing_by_puuid.contains_key(player.puuid.as_str()))
+}
+
+fn player_roster_is_subset(
+    existing: &[PlayerDisplayData],
+    refreshed: &[PlayerDisplayData],
+) -> bool {
+    if refreshed.is_empty() {
+        return false;
+    }
+
+    let existing_by_puuid: HashMap<&str, ()> = existing
+        .iter()
+        .filter(|player| !player.puuid.is_empty())
+        .map(|player| (player.puuid.as_str(), ()))
+        .collect();
+
+    refreshed.iter().all(|player| {
+        !player.puuid.is_empty() && existing_by_puuid.contains_key(player.puuid.as_str())
+    })
 }
 
 fn has_team_assignment_changes(
@@ -787,13 +1029,29 @@ fn hydrate_player_history(
         player.last_seen_at = existing_player.last_seen_at.clone();
         player.last_seen_game_name = existing_player.last_seen_game_name.clone();
         player.last_seen_tag_line = existing_player.last_seen_tag_line.clone();
+        player.last_seen_map_name = existing_player.last_seen_map_name.clone();
+        player.last_seen_agent_name = existing_player.last_seen_agent_name.clone();
         player.last_seen_kd = existing_player.last_seen_kd;
     } else if let Some(encounter) = encounter {
         player.times_seen_before = encounter.times_seen;
         player.last_seen_at = encounter.last_seen_at;
         player.last_seen_game_name = encounter.game_name;
         player.last_seen_tag_line = encounter.tag_line;
+        player.last_seen_map_name = encounter.last_map_name;
+        player.last_seen_agent_name = encounter.last_agent_name;
         player.last_seen_kd = encounter.last_match_kd;
+    }
+}
+
+fn update_current_match_history_details(
+    history: &PlayerHistory,
+    players: &[PlayerDisplayData],
+    local_puuid: &str,
+    match_id: &str,
+    map_name: &str,
+) {
+    for player in players.iter().filter(|player| player.puuid != local_puuid) {
+        let _ = history.update_match_details(&player.puuid, match_id, map_name, &player.agent_name);
     }
 }
 
@@ -870,25 +1128,55 @@ async fn fetch_players_for_state(
     }
 }
 
-async fn detect_game_state_with_reauth(api: &mut RiotApiClient) -> GameState {
-    let detected_state = state::detect_game_state(api)
-        .await
-        .unwrap_or(GameState::Menu);
-    if detected_state != GameState::WaitingForClient {
-        return detected_state;
+async fn detect_game_state_with_reauth(
+    api: &mut RiotApiClient,
+    last_auth_refresh: &mut Option<std::time::Instant>,
+) -> state::GameStateDetection {
+    let detection =
+        state::detect_game_state(api)
+            .await
+            .unwrap_or_else(|error| state::GameStateDetection {
+                state: GameState::Menu,
+                source: state::DetectionSource::PresenceUnavailable,
+                evidence: format!("detection_error={error}"),
+                auth_refresh_recommended: true,
+            });
+    if detection.state != GameState::WaitingForClient && !detection.auth_refresh_recommended {
+        return detection;
+    }
+
+    if last_auth_refresh
+        .is_some_and(|refreshed_at| refreshed_at.elapsed() < DETECTION_AUTH_REFRESH_COOLDOWN)
+    {
+        return detection;
+    }
+    *last_auth_refresh = Some(std::time::Instant::now());
+
+    if detection.auth_refresh_recommended {
+        tracing::warn!(
+            "Game-state GLZ session is unavailable while Valorant is active; refreshing Riot authentication"
+        );
     }
 
     match api.refresh_auth_from_lockfile().await {
         Ok(true) => {
-            tracing::info!("Refreshed Riot client session after reconnect");
+            tracing::info!("Refreshed Riot client authentication for game-state detection");
             state::detect_game_state(api)
                 .await
-                .unwrap_or(GameState::Menu)
+                .unwrap_or_else(|error| state::GameStateDetection {
+                    state: GameState::Menu,
+                    source: state::DetectionSource::PresenceUnavailable,
+                    evidence: format!("detection_error_after_reauth={error}"),
+                    auth_refresh_recommended: false,
+                })
         }
-        Ok(false) => detected_state,
+        Ok(false) => {
+            tracing::debug!("Riot authentication refresh returned unchanged credentials");
+            detection
+        }
         Err(error) => {
             tracing::debug!("Riot session refresh unavailable: {}", error);
-            detected_state
+            detection
         }
     }
 }
@@ -955,6 +1243,8 @@ fn carry_over_enrichment(player: &mut PlayerDisplayData, source: &PlayerDisplayD
     player.last_seen_at = source.last_seen_at.clone();
     player.last_seen_game_name = source.last_seen_game_name.clone();
     player.last_seen_tag_line = source.last_seen_tag_line.clone();
+    player.last_seen_map_name = source.last_seen_map_name.clone();
+    player.last_seen_agent_name = source.last_seen_agent_name.clone();
     player.last_seen_kd = source.last_seen_kd;
     player.enriched = source.enriched;
 }
@@ -996,8 +1286,9 @@ fn should_fetch_initial_player_snapshot(
 mod tests {
     use super::{
         carry_over_enrichment, carry_over_existing_enrichment, hydrate_player_history,
-        is_ingame_match_id_change, merge_live_players, merge_or_swap_side_change,
-        same_player_roster, should_fetch_initial_player_snapshot, should_fetch_menu_party,
+        is_ingame_match_id_change, merge_live_players, merge_match_players,
+        merge_or_swap_side_change, player_roster_is_subset, same_player_roster,
+        should_fetch_initial_player_snapshot, should_fetch_menu_party,
         should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
         WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
@@ -1079,6 +1370,92 @@ mod tests {
     }
 
     #[test]
+    fn match_merge_preserves_players_missing_from_partial_refresh() {
+        let mut existing = vec![
+            PlayerDisplayData {
+                puuid: "local-player".into(),
+                game_name: "Local".into(),
+                team_id: "Blue".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "teammate".into(),
+                game_name: "Teammate".into(),
+                team_id: "Blue".into(),
+                current_rank: 20,
+                enriched: true,
+                ..Default::default()
+            },
+        ];
+        let refreshed = vec![PlayerDisplayData {
+            puuid: "local-player".into(),
+            game_name: "Local Updated".into(),
+            team_id: "Blue".into(),
+            ..Default::default()
+        }];
+
+        merge_match_players(&mut existing, refreshed);
+
+        assert_eq!(existing.len(), 2);
+        assert_eq!(existing[0].game_name, "Local Updated");
+        assert_eq!(existing[1].puuid, "teammate");
+        assert_eq!(existing[1].current_rank, 20);
+        assert!(existing[1].enriched);
+    }
+
+    #[test]
+    fn partial_roster_is_recognized_as_existing_match_subset() {
+        let existing = vec![
+            PlayerDisplayData {
+                puuid: "local-player".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "teammate".into(),
+                ..Default::default()
+            },
+        ];
+        let partial = vec![PlayerDisplayData {
+            puuid: "local-player".into(),
+            ..Default::default()
+        }];
+        let different = vec![PlayerDisplayData {
+            puuid: "new-player".into(),
+            ..Default::default()
+        }];
+
+        assert!(player_roster_is_subset(&existing, &partial));
+        assert!(!player_roster_is_subset(&existing, &different));
+    }
+
+    #[test]
+    fn partial_side_swap_updates_missing_player_team_color() {
+        let mut existing = vec![
+            PlayerDisplayData {
+                puuid: "local-player".into(),
+                team_id: "Blue".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "teammate".into(),
+                team_id: "Red".into(),
+                ..Default::default()
+            },
+        ];
+        let refreshed = vec![PlayerDisplayData {
+            puuid: "local-player".into(),
+            team_id: "Red".into(),
+            ..Default::default()
+        }];
+
+        merge_or_swap_side_change(&mut existing, refreshed);
+
+        assert_eq!(existing.len(), 2);
+        assert_eq!(existing[0].team_id, "Red");
+        assert_eq!(existing[1].team_id, "Blue");
+    }
+
+    #[test]
     fn hydrate_player_history_prefers_existing_match_snapshot() {
         let mut player = PlayerDisplayData {
             puuid: "player-1".into(),
@@ -1092,6 +1469,8 @@ mod tests {
                 last_seen_at: "2026-03-08 12:00:00".into(),
                 last_seen_game_name: "Existing".into(),
                 last_seen_tag_line: "OLD".into(),
+                last_seen_map_name: "Ascent".into(),
+                last_seen_agent_name: "Jett".into(),
                 last_seen_kd: Some(1.24),
                 ..Default::default()
             },
@@ -1106,6 +1485,8 @@ mod tests {
                 tag_line: "NEW".into(),
                 times_seen: 9,
                 last_seen_at: "2026-03-10 12:00:00".into(),
+                last_map_name: "Bind".into(),
+                last_agent_name: "Sage".into(),
                 last_match_kd: Some(0.95),
             }),
         );
@@ -1114,6 +1495,8 @@ mod tests {
         assert_eq!(player.last_seen_at, "2026-03-08 12:00:00");
         assert_eq!(player.last_seen_game_name, "Existing");
         assert_eq!(player.last_seen_tag_line, "OLD");
+        assert_eq!(player.last_seen_map_name, "Ascent");
+        assert_eq!(player.last_seen_agent_name, "Jett");
         assert_eq!(player.last_seen_kd, Some(1.24));
     }
 
@@ -1133,6 +1516,8 @@ mod tests {
                 tag_line: "TAG".into(),
                 times_seen: 3,
                 last_seen_at: "2026-03-07 12:00:00".into(),
+                last_map_name: "Haven".into(),
+                last_agent_name: "Omen".into(),
                 last_match_kd: Some(1.11),
             }),
         );
@@ -1141,6 +1526,8 @@ mod tests {
         assert_eq!(player.last_seen_at, "2026-03-07 12:00:00");
         assert_eq!(player.last_seen_game_name, "Database");
         assert_eq!(player.last_seen_tag_line, "TAG");
+        assert_eq!(player.last_seen_map_name, "Haven");
+        assert_eq!(player.last_seen_agent_name, "Omen");
         assert_eq!(player.last_seen_kd, Some(1.11));
     }
 

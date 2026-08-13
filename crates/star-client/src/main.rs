@@ -21,6 +21,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const STARTUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+const DATA_LOOP_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const DATA_LOOP_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const SETTINGS_SCROLL_MULTIPLIER: f32 = 64.0;
 #[cfg(target_os = "windows")]
 const DETACHED_LAUNCH_ENV: &str = "STAR_CLIENT_DETACHED";
@@ -217,13 +219,36 @@ async fn run_background_loop(
             star_client.start_heartbeat_loop();
         }
 
-        app::run_data_loop(
+        let poll_heartbeat = Arc::new(parking_lot::Mutex::new(std::time::Instant::now()));
+        let mut data_task = tokio::spawn(app::run_data_loop(
             Arc::clone(&app_state),
-            api,
+            Arc::clone(&api),
             Arc::clone(&star_client),
             Arc::clone(&quit_flag),
-        )
-        .await;
+            Arc::clone(&poll_heartbeat),
+        ));
+
+        loop {
+            tokio::select! {
+                result = &mut data_task => {
+                    if let Err(error) = result {
+                        tracing::error!("Data loop task failed: {}", error);
+                    }
+                    break;
+                }
+                _ = tokio::time::sleep(DATA_LOOP_WATCHDOG_INTERVAL) => {
+                    if poll_heartbeat.lock().elapsed() >= DATA_LOOP_STALL_TIMEOUT {
+                        tracing::warn!(
+                            "Data loop has not started a poll in {} seconds; restarting session bootstrap",
+                            DATA_LOOP_STALL_TIMEOUT.as_secs()
+                        );
+                        data_task.abort();
+                        let _ = data_task.await;
+                        break;
+                    }
+                }
+            }
+        }
 
         // Deregister from star backend when the session ends
         if config.star.enabled {
