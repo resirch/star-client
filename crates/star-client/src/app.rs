@@ -671,7 +671,7 @@ pub async fn run_data_loop(
                 {
                     tracing::warn!("Party presence refresh timed out");
                 }
-                let (local_puuid, map_name) = {
+                let (local_puuid, map_name, existing_players_by_puuid) = {
                     let state = app_state.read().await;
                     (
                         state.local_puuid.clone(),
@@ -680,15 +680,22 @@ pub async fn run_data_loop(
                             .as_ref()
                             .map(|context| context.map.name.clone())
                             .unwrap_or_default(),
+                        state
+                            .players
+                            .iter()
+                            .cloned()
+                            .map(|player| (player.puuid.clone(), player))
+                            .collect(),
                     )
                 };
                 if let Some(history) = &history {
-                    update_current_match_history_details(
+                    sync_current_match_history(
                         history,
-                        &refreshed_players,
+                        &mut refreshed_players,
                         &local_puuid,
                         match_id,
                         &map_name,
+                        &existing_players_by_puuid,
                     );
                 }
                 let mut state = app_state.write().await;
@@ -705,7 +712,7 @@ pub async fn run_data_loop(
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
                 players::mark_party_from_presences(&api_guard, &mut refreshed_players).await;
-                let (local_puuid, map_name) = {
+                let (local_puuid, map_name, existing_players_by_puuid) = {
                     let state = app_state.read().await;
                     (
                         state.local_puuid.clone(),
@@ -714,15 +721,22 @@ pub async fn run_data_loop(
                             .as_ref()
                             .map(|context| context.map.name.clone())
                             .unwrap_or_default(),
+                        state
+                            .players
+                            .iter()
+                            .cloned()
+                            .map(|player| (player.puuid.clone(), player))
+                            .collect(),
                     )
                 };
                 if let Some(history) = &history {
-                    update_current_match_history_details(
+                    sync_current_match_history(
                         history,
-                        &refreshed_players,
+                        &mut refreshed_players,
                         &local_puuid,
                         match_id,
                         &map_name,
+                        &existing_players_by_puuid,
                     );
                 }
                 let mut state = app_state.write().await;
@@ -1043,15 +1057,36 @@ fn hydrate_player_history(
     }
 }
 
-fn update_current_match_history_details(
+fn sync_current_match_history(
     history: &PlayerHistory,
-    players: &[PlayerDisplayData],
+    players: &mut [PlayerDisplayData],
     local_puuid: &str,
     match_id: &str,
     map_name: &str,
+    existing_players_by_puuid: &HashMap<String, PlayerDisplayData>,
 ) {
-    for player in players.iter().filter(|player| player.puuid != local_puuid) {
-        let _ = history.update_match_details(&player.puuid, match_id, map_name, &player.agent_name);
+    for player in players {
+        hydrate_player_history(
+            player,
+            local_puuid,
+            existing_players_by_puuid,
+            history.encounter(&player.puuid, match_id),
+        );
+
+        if player.puuid == local_puuid {
+            continue;
+        }
+
+        let _ = history.record_encounter(
+            &player.puuid,
+            match_id,
+            &player.game_name,
+            &player.tag_line,
+            map_name,
+            &player.agent_name,
+            !player.game_name.is_empty(),
+            None,
+        );
     }
 }
 
@@ -1290,9 +1325,9 @@ mod tests {
         merge_or_swap_side_change, player_roster_is_subset, same_player_roster,
         should_fetch_initial_player_snapshot, should_fetch_menu_party,
         should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
-        WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
+        sync_current_match_history, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
-    use crate::game::history::EncounterRecord;
+    use crate::game::history::{EncounterRecord, PlayerHistory};
     use crate::game::state::GameState;
     use crate::riot::types::PlayerDisplayData;
     use std::collections::HashMap;
@@ -1529,6 +1564,43 @@ mod tests {
         assert_eq!(player.last_seen_map_name, "Haven");
         assert_eq!(player.last_seen_agent_name, "Omen");
         assert_eq!(player.last_seen_kd, Some(1.11));
+    }
+
+    #[test]
+    fn refreshed_player_is_recorded_with_current_match_details() {
+        let data_dir =
+            std::env::temp_dir().join(format!("star-client-history-{}", uuid::Uuid::new_v4()));
+
+        {
+            let history = PlayerHistory::open(&data_dir).unwrap();
+            let mut players = vec![PlayerDisplayData {
+                puuid: "player-1".into(),
+                game_name: "Player".into(),
+                tag_line: "TAG".into(),
+                agent_name: "Sage".into(),
+                ..Default::default()
+            }];
+
+            sync_current_match_history(
+                &history,
+                &mut players,
+                "local-player",
+                "match-1",
+                "Haven",
+                &HashMap::new(),
+            );
+
+            let during_match = history.encounter("player-1", "match-1").unwrap();
+            assert_eq!(during_match.times_seen, 0);
+            assert!(during_match.last_seen_at.is_empty());
+
+            let after_match = history.encounter("player-1", "match-2").unwrap();
+            assert_eq!(after_match.times_seen, 1);
+            assert_eq!(after_match.last_map_name, "Haven");
+            assert_eq!(after_match.last_agent_name, "Sage");
+        }
+
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]

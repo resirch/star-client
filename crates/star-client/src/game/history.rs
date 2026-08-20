@@ -134,23 +134,6 @@ impl PlayerHistory {
         Ok(())
     }
 
-    pub fn update_match_details(
-        &self,
-        puuid: &str,
-        match_id: &str,
-        map_name: &str,
-        agent_name: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE encounters
-             SET map_name = CASE WHEN ?3 = '' THEN map_name ELSE ?3 END,
-                 agent_name = CASE WHEN ?4 = '' THEN agent_name ELSE ?4 END
-             WHERE puuid = ?1 AND last_match_id = ?2",
-            rusqlite::params![puuid, match_id, map_name, agent_name],
-        )?;
-        Ok(())
-    }
-
     pub fn continue_match(&self, previous_match_id: &str, match_id: &str) -> Result<()> {
         if previous_match_id.is_empty() || match_id.is_empty() || previous_match_id == match_id {
             return Ok(());
@@ -173,12 +156,11 @@ impl PlayerHistory {
         last_match_kd: Option<f64>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO encounters (puuid, game_name, tag_line, times_seen, last_seen, last_match_kd)
-             VALUES (?1, ?2, ?3, 1, datetime('now'), ?4)
-             ON CONFLICT(puuid) DO UPDATE SET
-                game_name = ?2,
-                tag_line = ?3,
-                last_match_kd = COALESCE(?4, last_match_kd)",
+            "UPDATE encounters
+             SET game_name = ?2,
+                 tag_line = ?3,
+                 last_match_kd = COALESCE(?4, last_match_kd)
+             WHERE puuid = ?1",
             rusqlite::params![puuid, game_name, tag_line, last_match_kd],
         )?;
         Ok(())
@@ -361,7 +343,9 @@ mod tests {
                 )
                 .unwrap();
             history
-                .update_match_details("player-1", "pregame", "Ascent", "Jett")
+                .record_encounter(
+                    "player-1", "pregame", "Player", "TAG", "Ascent", "Jett", true, None,
+                )
                 .unwrap();
             history.continue_match("pregame", "ingame").unwrap();
             history
@@ -373,6 +357,23 @@ mod tests {
             let encounter = history.encounter("player-1", "ingame").unwrap();
             assert_eq!(encounter.times_seen, 0);
             assert!(encounter.last_seen_at.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn identity_update_does_not_create_a_phantom_encounter() {
+        let data_dir =
+            std::env::temp_dir().join(format!("star-client-history-{}", uuid::Uuid::new_v4()));
+
+        {
+            let history = PlayerHistory::open(&data_dir).unwrap();
+            history
+                .update_identity("player-1", "Player", "TAG", Some(1.25))
+                .unwrap();
+
+            assert!(history.encounter("player-1", "match-1").is_none());
         }
 
         let _ = std::fs::remove_dir_all(data_dir);
