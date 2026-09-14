@@ -280,7 +280,7 @@ pub async fn run_data_loop(
                         );
                     }
                 }
-                let ctx = match_data::fetch_coregame_context(&api_guard, &match_id)
+                let ctx = match_data::fetch_coregame_context(&mut api_guard, &match_id)
                     .await
                     .ok();
                 let mut state = app_state.write().await;
@@ -379,12 +379,12 @@ pub async fn run_data_loop(
             };
             let ctx = match &new_state {
                 GameState::Pregame { match_id } => {
-                    match_data::fetch_pregame_context(&api_guard, match_id)
+                    match_data::fetch_pregame_context(&mut api_guard, match_id)
                         .await
                         .ok()
                 }
                 GameState::Ingame { match_id } => {
-                    match_data::fetch_coregame_context(&api_guard, match_id)
+                    match_data::fetch_coregame_context(&mut api_guard, match_id)
                         .await
                         .ok()
                 }

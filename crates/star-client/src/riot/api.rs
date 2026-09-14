@@ -14,6 +14,9 @@ pub struct RiotApiClient {
     agent_cache: HashMap<String, AgentData>,
     agent_cache_fetched_at: Option<Instant>,
     unknown_agent_uuids: HashSet<String>,
+    map_cache: HashMap<String, String>,
+    map_cache_fetched_at: Option<Instant>,
+    unknown_map_ids: HashSet<String>,
     skin_cache: HashMap<String, SkinLevelInfo>,
 }
 
@@ -32,6 +35,9 @@ impl RiotApiClient {
             agent_cache: HashMap::new(),
             agent_cache_fetched_at: None,
             unknown_agent_uuids: HashSet::new(),
+            map_cache: HashMap::new(),
+            map_cache_fetched_at: None,
+            unknown_map_ids: HashSet::new(),
             skin_cache: HashMap::new(),
         })
     }
@@ -475,6 +481,87 @@ impl RiotApiClient {
             self.agent_cache_fetched_at = Some(Instant::now());
         } else {
             tracing::warn!("Agent API returned status {} but no data", resp.status);
+        }
+        Ok(())
+    }
+
+    /// Resolves either a map URL or UUID to its current display name.
+    ///
+    /// The live map catalog avoids requiring a client update whenever Riot
+    /// ships a map with a new internal codename.
+    pub async fn resolve_map(&mut self, map_id: &str) -> Option<String> {
+        let map_id = map_id.trim();
+        if map_id.is_empty() {
+            return None;
+        }
+
+        let key = map_id.to_lowercase();
+        if !self.map_cache.contains_key(&key) {
+            if let Err(e) = self.fetch_maps_if_needed(true).await {
+                tracing::warn!("Failed to refresh map cache: {}", e);
+            }
+        }
+
+        if let Some(name) = self.map_cache.get(&key) {
+            return Some(name.clone());
+        }
+
+        if self.unknown_map_ids.insert(key) {
+            tracing::warn!(
+                "Map ID {} not found in cache ({} map identifiers cached)",
+                map_id,
+                self.map_cache.len()
+            );
+        }
+
+        None
+    }
+
+    async fn fetch_maps_if_needed(&mut self, refresh_if_stale: bool) -> Result<()> {
+        const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+        if !self.map_cache.is_empty() {
+            if !refresh_if_stale {
+                return Ok(());
+            }
+            if self
+                .map_cache_fetched_at
+                .is_some_and(|fetched_at| fetched_at.elapsed() < MIN_REFRESH_INTERVAL)
+            {
+                return Ok(());
+            }
+        }
+
+        self.refresh_maps().await
+    }
+
+    async fn refresh_maps(&mut self) -> Result<()> {
+        tracing::debug!("Fetching map data from valorant-api.com");
+        let resp: ValorantApiResponse<Vec<MapData>> = self
+            .http
+            .get("https://valorant-api.com/v1/maps")
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(maps) = resp.data {
+            tracing::debug!("Loaded {} maps into cache", maps.len());
+            self.map_cache.clear();
+            for map in maps {
+                let display_name = map.display_name;
+                let uuid_key = map.uuid.to_lowercase();
+                self.unknown_map_ids.remove(&uuid_key);
+                self.map_cache.insert(uuid_key, display_name.clone());
+
+                if let Some(map_url) = map.map_url {
+                    let url_key = map_url.to_lowercase();
+                    self.unknown_map_ids.remove(&url_key);
+                    self.map_cache.insert(url_key, display_name);
+                }
+            }
+            self.map_cache_fetched_at = Some(Instant::now());
+        } else {
+            tracing::warn!("Map API returned status {} but no data", resp.status);
         }
         Ok(())
     }
