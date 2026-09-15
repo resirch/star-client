@@ -295,51 +295,38 @@ pub async fn run_data_loop(
                 continue;
             }
 
-            // Carry over enriched data when transitioning from pregame to ingame
-            // (same game, different match_id; no need to re-fetch ranks/stats)
+            // Carry over enriched data and party groupings when transitioning from
+            // pregame to ingame (same game, different match_id).
             if is_new_match && matches!(previous_state, GameState::Pregame { .. }) {
                 let state = app_state.read().await;
-                let enriched_by_puuid: HashMap<String, &PlayerDisplayData> = state
+                let previous_by_puuid: HashMap<&str, &PlayerDisplayData> = state
                     .players
                     .iter()
-                    .filter(|p| p.enriched)
-                    .map(|p| (p.puuid.clone(), p))
+                    .map(|player| (player.puuid.as_str(), player))
                     .collect();
+                let mut carried_enrichment = 0usize;
+                let mut carried_party = 0usize;
                 for player in &mut players_data {
-                    if let Some(prev) = enriched_by_puuid.get(&player.puuid) {
-                        carry_over_enrichment(player, prev);
+                    if let Some(prev) = previous_by_puuid.get(player.puuid.as_str()) {
+                        if prev.enriched {
+                            carry_over_enrichment(player, prev);
+                            carried_enrichment += 1;
+                        }
+                        if carry_over_party(player, prev) {
+                            carried_party += 1;
+                        }
                     }
                 }
                 tracing::debug!(
-                    "Carried over enrichment for {} pregame players",
-                    enriched_by_puuid.len()
+                    "Carried over enrichment for {} pregame players and party data for {}",
+                    carried_enrichment,
+                    carried_party
                 );
             }
 
             if new_state.is_in_match() && !players_data.is_empty() {
-                if config.behavior.party_finder
-                    && tokio::time::timeout(
-                        PARTY_LOOKUP_TIMEOUT,
-                        party::detect_parties(&api_guard, &mut players_data),
-                    )
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("Party history lookup timed out; showing roster without it");
-                }
-
-                // Always mark party members from presences after party finder so
-                // the local party keeps a visible indicator and incognito
-                // teammates have their names shown.
-                if tokio::time::timeout(
-                    PARTY_PRESENCE_TIMEOUT,
-                    players::mark_party_from_presences(&api_guard, &mut players_data),
-                )
-                .await
-                .is_err()
-                {
-                    tracing::warn!("Party presence lookup timed out; showing roster without it");
-                }
+                apply_party_lookups(&api_guard, &mut players_data, config.behavior.party_finder)
+                    .await;
             }
 
             if config.star.enabled {
@@ -652,25 +639,12 @@ pub async fn run_data_loop(
             let mut refreshed_players =
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
-                if config.behavior.party_finder
-                    && tokio::time::timeout(
-                        PARTY_LOOKUP_TIMEOUT,
-                        party::detect_parties(&api_guard, &mut refreshed_players),
-                    )
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("Party history refresh timed out");
-                }
-                if tokio::time::timeout(
-                    PARTY_PRESENCE_TIMEOUT,
-                    players::mark_party_from_presences(&api_guard, &mut refreshed_players),
+                apply_party_lookups(
+                    &api_guard,
+                    &mut refreshed_players,
+                    config.behavior.party_finder,
                 )
-                .await
-                .is_err()
-                {
-                    tracing::warn!("Party presence refresh timed out");
-                }
+                .await;
                 let (local_puuid, map_name, existing_players_by_puuid) = {
                     let state = app_state.read().await;
                     (
@@ -711,7 +685,16 @@ pub async fn run_data_loop(
             let mut refreshed_players =
                 fetch_players_for_state_with_reauth(&mut api_guard, &new_state, &config).await;
             if !refreshed_players.is_empty() {
-                players::mark_party_from_presences(&api_guard, &mut refreshed_players).await;
+                {
+                    let state = app_state.read().await;
+                    carry_over_parties(&mut refreshed_players, &state.players);
+                }
+                apply_party_lookups(
+                    &api_guard,
+                    &mut refreshed_players,
+                    config.behavior.party_finder,
+                )
+                .await;
                 let (local_puuid, map_name, existing_players_by_puuid) = {
                     let state = app_state.read().await;
                     (
@@ -1255,6 +1238,55 @@ fn is_ingame_match_id_change(previous_state: &GameState, new_state: &GameState) 
     )
 }
 
+async fn apply_party_lookups(
+    api: &RiotApiClient,
+    players: &mut [PlayerDisplayData],
+    party_finder: bool,
+) {
+    if party_finder
+        && tokio::time::timeout(PARTY_LOOKUP_TIMEOUT, party::detect_parties(api, players))
+            .await
+            .is_err()
+    {
+        tracing::warn!("Party history lookup timed out; showing roster without it");
+    }
+
+    if tokio::time::timeout(
+        PARTY_PRESENCE_TIMEOUT,
+        players::mark_party_from_presences(api, players),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("Party presence lookup timed out; showing roster without it");
+    }
+}
+
+fn carry_over_party(player: &mut PlayerDisplayData, source: &PlayerDisplayData) -> bool {
+    let mut carried = false;
+    if player.party_id.is_empty() && !source.party_id.is_empty() {
+        player.party_id = source.party_id.clone();
+        carried = true;
+    }
+    if player.party_number <= 0 && source.party_number > 0 {
+        player.party_number = source.party_number;
+        carried = true;
+    }
+    carried
+}
+
+fn carry_over_parties(players: &mut [PlayerDisplayData], existing: &[PlayerDisplayData]) {
+    let existing_by_puuid: HashMap<&str, &PlayerDisplayData> = existing
+        .iter()
+        .map(|player| (player.puuid.as_str(), player))
+        .collect();
+    for player in players {
+        if let Some(source) = existing_by_puuid.get(player.puuid.as_str()) {
+            carry_over_party(player, source);
+        }
+    }
+}
+
 fn carry_over_enrichment(player: &mut PlayerDisplayData, source: &PlayerDisplayData) {
     player.current_rank = source.current_rank;
     player.rank_name = source.rank_name.clone();
@@ -1320,10 +1352,10 @@ fn should_fetch_initial_player_snapshot(
 #[cfg(test)]
 mod tests {
     use super::{
-        carry_over_enrichment, carry_over_existing_enrichment, hydrate_player_history,
-        is_ingame_match_id_change, merge_live_players, merge_match_players,
-        merge_or_swap_side_change, player_roster_is_subset, same_player_roster,
-        should_fetch_initial_player_snapshot, should_fetch_menu_party,
+        carry_over_enrichment, carry_over_existing_enrichment, carry_over_parties,
+        carry_over_party, hydrate_player_history, is_ingame_match_id_change, merge_live_players,
+        merge_match_players, merge_or_swap_side_change, player_roster_is_subset,
+        same_player_roster, should_fetch_initial_player_snapshot, should_fetch_menu_party,
         should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
         sync_current_match_history, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
@@ -1857,6 +1889,90 @@ mod tests {
         assert_eq!(player.team_id, "Red");
         assert_eq!(player.game_name, "NewName");
         assert_eq!(player.agent_name, "Jett");
+    }
+
+    #[test]
+    fn carry_over_party_preserves_pregame_groupings() {
+        let source = PlayerDisplayData {
+            puuid: "player-1".into(),
+            party_id: "pregame-party".into(),
+            party_number: 2,
+            ..Default::default()
+        };
+        let mut player = PlayerDisplayData {
+            puuid: "player-1".into(),
+            team_id: "Red".into(),
+            ..Default::default()
+        };
+
+        assert!(carry_over_party(&mut player, &source));
+        assert_eq!(player.party_id, "pregame-party");
+        assert_eq!(player.party_number, 2);
+        assert_eq!(player.team_id, "Red");
+    }
+
+    #[test]
+    fn carry_over_party_does_not_overwrite_live_party() {
+        let source = PlayerDisplayData {
+            puuid: "player-1".into(),
+            party_id: "pregame-party".into(),
+            party_number: 1,
+            ..Default::default()
+        };
+        let mut player = PlayerDisplayData {
+            puuid: "player-1".into(),
+            party_id: "live-party".into(),
+            party_number: 3,
+            ..Default::default()
+        };
+
+        assert!(!carry_over_party(&mut player, &source));
+        assert_eq!(player.party_id, "live-party");
+        assert_eq!(player.party_number, 3);
+    }
+
+    #[test]
+    fn carry_over_parties_copies_missing_groupings_by_puuid() {
+        let existing = vec![
+            PlayerDisplayData {
+                puuid: "stack-a".into(),
+                party_id: "party-1".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "stack-b".into(),
+                party_id: "party-1".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        let mut refreshed = vec![
+            PlayerDisplayData {
+                puuid: "stack-a".into(),
+                team_id: "Blue".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "stack-b".into(),
+                team_id: "Blue".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "solo".into(),
+                team_id: "Red".into(),
+                ..Default::default()
+            },
+        ];
+
+        carry_over_parties(&mut refreshed, &existing);
+
+        assert_eq!(refreshed[0].party_id, "party-1");
+        assert_eq!(refreshed[0].party_number, 1);
+        assert_eq!(refreshed[1].party_id, "party-1");
+        assert_eq!(refreshed[1].party_number, 1);
+        assert!(refreshed[2].party_id.is_empty());
+        assert_eq!(refreshed[2].party_number, 0);
     }
 
     #[test]

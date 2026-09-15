@@ -264,6 +264,8 @@ pub struct PregamePlayer {
     pub character_selection_state: Option<String>,
     pub player_identity: Option<PlayerIdentity>,
     pub is_captain: Option<bool>,
+    #[serde(default)]
+    pub party_id: Option<String>,
 }
 
 // --- Coregame ---
@@ -295,6 +297,8 @@ pub struct CoregamePlayer {
     pub team_i_d: Option<String>,
     pub character_i_d: Option<String>,
     pub player_identity: Option<PlayerIdentity>,
+    #[serde(default)]
+    pub party_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

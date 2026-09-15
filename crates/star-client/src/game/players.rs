@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::game::party;
 use crate::riot::api::RiotApiClient;
 use crate::riot::types::*;
 use crate::stats::performance::extract_player_performance;
@@ -92,10 +93,14 @@ pub async fn fetch_pregame_players(
             }
 
             display.team_id = team.team_i_d.clone().unwrap_or_default();
+            if let Some(party_id) = p.party_id.as_deref().filter(|id| !id.is_empty()) {
+                display.party_id = party_id.to_string();
+            }
             players.push(display);
         }
     }
 
+    party::apply_match_party_ids(&mut players);
     tracing::debug!("Built {} pregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
@@ -148,6 +153,9 @@ pub async fn fetch_coregame_players(
         }
 
         display.team_id = p.team_i_d.clone().unwrap_or_default();
+        if let Some(party_id) = p.party_id.as_deref().filter(|id| !id.is_empty()) {
+            display.party_id = party_id.to_string();
+        }
 
         if let Some(loadout) = loadout_map.get(&p.subject) {
             let skin = extract_weapon_skin(api, loadout, &config.overlay.weapon);
@@ -160,6 +168,7 @@ pub async fn fetch_coregame_players(
         players.push(display);
     }
 
+    party::apply_match_party_ids(&mut players);
     tracing::debug!("Built {} coregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
@@ -178,7 +187,7 @@ pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [Playe
         return;
     };
 
-    if local_presence.party_id.is_empty() || local_presence.party_size <= 1 {
+    if local_presence.party_id.is_empty() {
         return;
     }
 
@@ -188,11 +197,48 @@ pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [Playe
         .map(|(puuid, _)| puuid.as_str())
         .collect();
 
+    apply_local_presence_party(
+        players,
+        local_puuid,
+        &local_presence.party_id,
+        &party_puuids,
+    );
+}
+
+fn apply_local_presence_party(
+    players: &mut [PlayerDisplayData],
+    local_puuid: &str,
+    local_party_id: &str,
+    presence_party_puuids: &HashSet<&str>,
+) {
+    if local_party_id.is_empty() {
+        return;
+    }
+
+    let roster_matches = players
+        .iter()
+        .filter(|player| presence_party_puuids.contains(player.puuid.as_str()))
+        .count();
+    if roster_matches < 2 {
+        return;
+    }
+
+    let existing_local = players.iter().find(|player| player.puuid == local_puuid);
+    let existing_party_id = existing_local
+        .map(|player| player.party_id.clone())
+        .unwrap_or_default();
+    let existing_party_number = existing_local
+        .map(|player| player.party_number)
+        .unwrap_or(0);
     let party_number = local_presence_party_number(players, local_puuid);
 
     for player in players.iter_mut() {
-        if party_puuids.contains(player.puuid.as_str()) {
-            player.party_id = local_presence.party_id.clone();
+        let in_presence_party = presence_party_puuids.contains(player.puuid.as_str());
+        let in_existing_local_party = (!existing_party_id.is_empty()
+            && player.party_id == existing_party_id)
+            || (existing_party_number > 0 && player.party_number == existing_party_number);
+        if in_presence_party || in_existing_local_party {
+            player.party_id = local_party_id.to_string();
             player.party_number = party_number;
         }
     }
@@ -782,16 +828,17 @@ fn standard_skin_name(weapon_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_competitive_update, build_season_lookup, earned_rr_from_update,
-        extract_latest_comp_update, extract_rank_data, local_presence_party_number,
-        normalize_overlay_weapon, preferred_recent_match_id, selected_character_id, SeasonLookup,
+        apply_competitive_update, apply_local_presence_party, build_season_lookup,
+        earned_rr_from_update, extract_latest_comp_update, extract_rank_data,
+        local_presence_party_number, normalize_overlay_weapon, preferred_recent_match_id,
+        selected_character_id, SeasonLookup,
     };
     use crate::riot::types::{
         CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason, MmrResponse,
         PlayerDisplayData, QueueSkill, SeasonalInfo,
     };
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn selected_character_id_ignores_unpicked_agents() {
@@ -844,6 +891,64 @@ mod tests {
             },
         ];
         assert_eq!(local_presence_party_number(&players, "local"), 3);
+    }
+
+    #[test]
+    fn presence_party_requires_two_roster_members() {
+        let mut players = vec![
+            PlayerDisplayData {
+                puuid: "local".into(),
+                party_id: "carried".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "mate".into(),
+                party_id: "carried".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        let presence_party = HashSet::from(["local"]);
+
+        apply_local_presence_party(&mut players, "local", "live-party", &presence_party);
+
+        assert_eq!(players[0].party_id, "carried");
+        assert_eq!(players[1].party_id, "carried");
+        assert_eq!(players[0].party_number, 1);
+        assert_eq!(players[1].party_number, 1);
+    }
+
+    #[test]
+    fn presence_party_keeps_existing_local_mates_missing_from_presence() {
+        let mut players = vec![
+            PlayerDisplayData {
+                puuid: "local".into(),
+                party_id: "carried".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "offline-mate".into(),
+                party_id: "carried".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "online-mate".into(),
+                ..Default::default()
+            },
+        ];
+        let presence_party = HashSet::from(["local", "online-mate"]);
+
+        apply_local_presence_party(&mut players, "local", "live-party", &presence_party);
+
+        assert_eq!(players[0].party_id, "live-party");
+        assert_eq!(players[1].party_id, "live-party");
+        assert_eq!(players[2].party_id, "live-party");
+        assert_eq!(players[0].party_number, 1);
+        assert_eq!(players[1].party_number, 1);
+        assert_eq!(players[2].party_number, 1);
     }
 
     #[test]
