@@ -69,7 +69,11 @@ pub fn render(
                 ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
 
                 ui.horizontal(|ui| {
-                    ui.heading(egui::RichText::new("Settings").color(theme::TEXT_PRIMARY));
+                    ui.heading(
+                        egui::RichText::new("[ SETTINGS ]")
+                            .font(theme::header_font())
+                            .color(theme::ACCENT),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
                             save_requested = true;
@@ -238,21 +242,37 @@ pub fn render(
 }
 
 fn configure_visuals(ctx: &egui::Context) {
+    theme::configure_fonts(ctx);
+
     let mut visuals = egui::Visuals::dark();
+    let flat = egui::Rounding::ZERO;
     visuals.panel_fill = theme::BG_COLOR;
     visuals.window_fill = theme::BG_COLOR;
+    visuals.window_rounding = flat;
+    visuals.window_stroke = theme::table_stroke();
     visuals.widgets.noninteractive.fg_stroke.color = theme::TEXT_PRIMARY;
+    visuals.widgets.noninteractive.bg_stroke = theme::inner_stroke();
+    visuals.widgets.noninteractive.rounding = flat;
     visuals.widgets.inactive.fg_stroke.color = theme::TEXT_PRIMARY;
+    visuals.widgets.inactive.bg_fill = theme::HEADER_BG;
+    visuals.widgets.inactive.rounding = flat;
     visuals.widgets.hovered.fg_stroke.color = theme::TEXT_PRIMARY;
+    visuals.widgets.hovered.bg_fill = theme::ROW_BG_ALT;
+    visuals.widgets.hovered.rounding = flat;
     visuals.widgets.active.fg_stroke.color = theme::TEXT_PRIMARY;
-    visuals.selection.bg_fill = theme::TEAM_BLUE;
+    visuals.widgets.active.bg_fill = theme::ACCENT_DIM;
+    visuals.widgets.active.rounding = flat;
+    visuals.widgets.open.rounding = flat;
+    visuals.selection.bg_fill = theme::ACCENT_DIM;
+    visuals.selection.stroke = theme::inner_stroke();
     ctx.set_visuals(visuals);
 }
 
 fn settings_section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::CollapsingHeader::new(
-        egui::RichText::new(title)
-            .color(theme::TEXT_PRIMARY)
+        egui::RichText::new(format!("> {title}"))
+            .font(theme::small_font())
+            .color(theme::TEXT_SECONDARY)
             .strong(),
     )
     .default_open(true)

@@ -3,21 +3,28 @@ use std::path::Path;
 
 const REGULAR_FONT_FAMILY: &str = "overlay-regular";
 
-pub const BG_COLOR: Color32 = Color32::from_rgba_premultiplied(15, 15, 20, 220);
-pub const HEADER_BG: Color32 = Color32::from_rgba_premultiplied(25, 25, 35, 240);
-pub const ROW_BG_ALLY: Color32 = Color32::from_rgba_premultiplied(20, 30, 20, 200);
-pub const ROW_BG_ENEMY: Color32 = Color32::from_rgba_premultiplied(30, 20, 20, 200);
-pub const BORDER_COLOR: Color32 = Color32::from_rgba_premultiplied(60, 60, 80, 180);
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(230, 230, 240);
-pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(160, 160, 175);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(100, 100, 115);
-pub const STAR_COLOR: Color32 = Color32::from_rgb(255, 215, 0);
-pub const TEAM_RED: Color32 = Color32::from_rgb(238, 77, 77);
-pub const TEAM_BLUE: Color32 = Color32::from_rgb(76, 151, 237);
-pub const STATUS_INGAME: Color32 = Color32::from_rgb(241, 39, 39);
-pub const STATUS_PREGAME: Color32 = Color32::from_rgb(103, 237, 76);
-pub const STATUS_MENU: Color32 = Color32::from_rgb(238, 241, 54);
-pub const STATUS_WAITING: Color32 = Color32::from_rgb(255, 165, 0);
+// Palette aligned with refact0r/system24 (midnight-discord base + TUI styling).
+pub const BG_COLOR: Color32 = Color32::from_rgba_premultiplied(22, 24, 28, 235);
+pub const HEADER_BG: Color32 = Color32::from_rgba_premultiplied(28, 31, 36, 245);
+pub const ROW_BG_ALLY: Color32 = Color32::from_rgba_premultiplied(24, 30, 28, 210);
+pub const ROW_BG_ENEMY: Color32 = Color32::from_rgba_premultiplied(30, 26, 26, 210);
+pub const ROW_BG_ALT: Color32 = Color32::from_rgba_premultiplied(26, 28, 33, 205);
+pub const BORDER_COLOR: Color32 = Color32::from_rgb(58, 64, 76);
+pub const BORDER_ACCENT: Color32 = Color32::from_rgb(72, 118, 148);
+pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(236, 240, 248);
+pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(158, 168, 184);
+pub const TEXT_MUTED: Color32 = Color32::from_rgb(88, 96, 112);
+pub const PANEL_LABEL: Color32 = Color32::from_rgb(108, 116, 132);
+pub const ACCENT: Color32 = Color32::from_rgb(118, 178, 214);
+pub const ACCENT_DIM: Color32 = Color32::from_rgb(82, 128, 158);
+pub const STAR_COLOR: Color32 = ACCENT;
+pub const TEAM_RED: Color32 = Color32::from_rgb(214, 98, 98);
+pub const TEAM_BLUE: Color32 = Color32::from_rgb(118, 178, 214);
+pub const STATUS_INGAME: Color32 = Color32::from_rgb(214, 88, 88);
+pub const STATUS_PREGAME: Color32 = Color32::from_rgb(118, 198, 158);
+pub const STATUS_MENU: Color32 = Color32::from_rgb(198, 186, 118);
+pub const STATUS_WAITING: Color32 = Color32::from_rgb(198, 148, 88);
+pub const BORDER_THICKNESS: f32 = 2.0;
 pub const VRY_DARK_RED: Color32 = Color32::from_rgb(64, 15, 10);
 pub const VRY_YELLOW: Color32 = Color32::from_rgb(140, 119, 11);
 pub const VRY_GREEN: Color32 = Color32::from_rgb(18, 204, 25);
@@ -33,16 +40,20 @@ pub const PARTY_COLORS: &[Color32] = &[
     Color32::from_rgb(255, 130, 180),
 ];
 
+fn mono_family() -> FontFamily {
+    FontFamily::Monospace
+}
+
 pub fn header_font() -> FontId {
-    FontId::new(13.0, FontFamily::Proportional)
+    FontId::new(13.0, mono_family())
 }
 
 pub fn body_font() -> FontId {
-    FontId::new(12.5, FontFamily::Proportional)
+    FontId::new(12.0, mono_family())
 }
 
 pub fn small_font() -> FontId {
-    FontId::new(10.0, FontFamily::Proportional)
+    FontId::new(10.0, mono_family())
 }
 
 pub fn small_regular_font() -> FontId {
@@ -50,7 +61,7 @@ pub fn small_regular_font() -> FontId {
 }
 
 pub fn star_font() -> FontId {
-    FontId::new(14.0, FontFamily::Proportional)
+    FontId::new(14.0, mono_family())
 }
 
 pub fn configure_fonts(ctx: &egui::Context) {
@@ -61,6 +72,24 @@ pub fn configure_fonts(ctx: &egui::Context) {
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
+
+    for source in monospace_font_sources() {
+        let path = Path::new(source.path);
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+
+        let mut font_data = egui::FontData::from_owned(bytes);
+        font_data.index = source.index;
+        fonts.font_data.insert(source.name.into(), font_data);
+        if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+            family.insert(0, source.name.to_string());
+        } else {
+            fonts
+                .families
+                .insert(FontFamily::Monospace, vec![source.name.to_string()]);
+        }
+    }
 
     for source in system_font_fallbacks() {
         let path = Path::new(source.path);
@@ -121,6 +150,27 @@ struct SystemFontSource {
     name: &'static str,
     path: &'static str,
     index: u32,
+}
+
+#[cfg(target_os = "windows")]
+fn monospace_font_sources() -> &'static [SystemFontSource] {
+    &[
+        SystemFontSource {
+            name: "system-cascadia-mono",
+            path: r"C:\Windows\Fonts\CascadiaMono.ttf",
+            index: 0,
+        },
+        SystemFontSource {
+            name: "system-consolas",
+            path: r"C:\Windows\Fonts\consola.ttf",
+            index: 0,
+        },
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
+fn monospace_font_sources() -> &'static [SystemFontSource] {
+    &[]
 }
 
 #[cfg(target_os = "windows")]
@@ -185,11 +235,19 @@ fn system_font_fallbacks() -> &'static [SystemFontSource] {
 }
 
 pub fn table_rounding() -> Rounding {
-    Rounding::same(6.0)
+    Rounding::ZERO
 }
 
 pub fn table_stroke() -> Stroke {
+    Stroke::new(BORDER_THICKNESS, BORDER_ACCENT)
+}
+
+pub fn inner_stroke() -> Stroke {
     Stroke::new(1.0, BORDER_COLOR)
+}
+
+pub fn cell_divider_stroke() -> Stroke {
+    Stroke::new(1.0, BORDER_COLOR.gamma_multiply(0.85))
 }
 
 pub fn team_text_color(is_ally: bool) -> Color32 {

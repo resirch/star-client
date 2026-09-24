@@ -1,0 +1,13 @@
+---
+description: Rebuild the debug binary after every code change
+alwaysApply: true
+---
+
+# Rebuild Debug Target After Changes
+
+After finishing code changes in this repo, always produce a fresh debug binary before ending the turn.
+
+- Run `cargo build --package star-client` (debug profile, not `--release`).
+- Do this after the last successful compile/test of the change, even if tests already compiled the crate.
+- If the debug build fails, fix the failure before considering the task done.
+- Skip only when the turn made no compilable source/build-script changes (docs, rules, comments-only, or git-only work).

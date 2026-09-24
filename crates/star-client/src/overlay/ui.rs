@@ -14,20 +14,48 @@ const STAR_W: f32 = 18.0;
 const ROW_H: f32 = 22.0;
 const HDR_H: f32 = 20.0;
 const CELL_PAD: f32 = 3.0;
+const COLUMN_GAP: f32 = 8.0;
 const SKIN_UPGRADE_GAP: f32 = 8.0;
 const SKIN_UPGRADE_BAR_HEIGHT: f32 = 9.0;
 const SKIN_UPGRADE_BAR_WIDTH: f32 = 1.5;
 const SKIN_UPGRADE_DOT_RADIUS: f32 = 1.7;
-const FRAME_INNER_MARGIN: f32 = 6.0;
+const FRAME_INNER_MARGIN: f32 = 8.0;
+const PANEL_LABEL_H: f32 = 14.0;
 const RANK_CELL_GAP: f32 = 4.0;
 const OVERLAY_STAR_TEXTURE_SIZE: u32 = 64;
 const STAR_ICON_INSET: f32 = 0.75;
 const PLAYER_STAR_SIZE: f32 = 14.0;
 const PARTY_OUTLINE_INSET: f32 = 1.0;
 const PARTY_OUTLINE_OPACITY: f32 = 0.25;
+const HDR_DIVIDER_W: f32 = 1.0;
+
+#[derive(Clone, Copy)]
+enum HdrAlign {
+    Left,
+    Center,
+}
 
 thread_local! {
     static STAR_ICON_TEXTURE: RefCell<Option<Option<egui::TextureHandle>>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableColumn {
+    Party,
+    Star,
+    Agent,
+    Name,
+    Rank,
+    Rr,
+    PreviousRank,
+    PeakRank,
+    Leaderboard,
+    Kd,
+    HeadshotPercent,
+    Winrate,
+    EarnedRr,
+    Level,
+    Skin,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,15 +118,15 @@ pub fn render_overlay(
                 .stroke(theme::table_stroke())
                 .inner_margin(FRAME_INNER_MARGIN)
                 .show(ui, |ui: &mut Ui| {
-                    ui.set_width(layout.frame_width);
                     ui.set_min_width(layout.frame_width);
-                    ui.set_max_width(layout.frame_width);
+                    ui.set_width(layout.frame_width);
                     ui.set_max_height(layout.frame_height);
+                    paint_panel_label(ui, "star-client");
                     title_bar(ui, game_state, match_context, config);
                     if visible_players.is_empty() {
                         ui.add_space(6.0);
                         ui.label(
-                            RichText::new("No active match data")
+                            RichText::new(":: no active match data")
                                 .font(theme::body_font())
                                 .color(theme::TEXT_MUTED),
                         );
@@ -161,11 +189,30 @@ fn version_footer(ui: &mut Ui) {
     ui.add_space(6.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.label(
-            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+            RichText::new(format!("~ v{}", env!("CARGO_PKG_VERSION")))
                 .font(theme::small_regular_font())
                 .color(theme::TEXT_MUTED),
         );
     });
+}
+
+fn paint_panel_label(ui: &mut Ui, label: &str) {
+    let full_w = ui.max_rect().width();
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(full_w, PANEL_LABEL_H), egui::Sense::hover());
+    ui.painter().text(
+        Pos2::new(rect.left(), rect.top()),
+        Align2::LEFT_TOP,
+        format!("// {label}"),
+        theme::small_font(),
+        theme::PANEL_LABEL,
+    );
+    ui.painter().hline(
+        rect.left()..=rect.right(),
+        rect.bottom(),
+        theme::inner_stroke(),
+    );
+    ui.add_space(4.0);
 }
 
 fn visible_players<'a>(
@@ -223,14 +270,7 @@ fn overlay_layout(
         local_party_id,
         local_party_number,
     );
-    let frame_width = table_width(
-        columns,
-        widths,
-        config,
-        show_leaderboard,
-        show_skin,
-        ctx.style().spacing.item_spacing.x,
-    );
+    let frame_width = table_width(columns, widths, show_leaderboard, show_skin);
     let frame_height = compute_frame_height(
         ctx,
         players,
@@ -266,6 +306,7 @@ fn compute_frame_height(
     let small_reg_row_h = ctx.fonts(|f| f.row_height(&theme::small_regular_font()));
     let body_row_h = ctx.fonts(|f| f.row_height(&theme::body_font()));
 
+    elements.push(PANEL_LABEL_H + 4.0);
     // title_bar: horizontal layout whose height = max(header label, allocated row_height)
     let title_alloc_h = theme::header_font().size.max(theme::small_font().size);
     elements.push(header_row_h.max(title_alloc_h));
@@ -326,58 +367,124 @@ fn compute_frame_height(
     sum + (elements.len().saturating_sub(1) as f32) * sp
 }
 
+fn visible_table_columns(
+    columns: &ColumnConfig,
+    show_leaderboard: bool,
+    show_skin: bool,
+) -> Vec<TableColumn> {
+    let mut cols = vec![
+        TableColumn::Party,
+        TableColumn::Star,
+        TableColumn::Agent,
+        TableColumn::Name,
+        TableColumn::Rank,
+    ];
+    if columns.rr {
+        cols.push(TableColumn::Rr);
+    }
+    if columns.previous_rank {
+        cols.push(TableColumn::PreviousRank);
+    }
+    if columns.peak_rank {
+        cols.push(TableColumn::PeakRank);
+    }
+    if show_leaderboard {
+        cols.push(TableColumn::Leaderboard);
+    }
+    if columns.kd {
+        cols.push(TableColumn::Kd);
+    }
+    if columns.headshot_percent {
+        cols.push(TableColumn::HeadshotPercent);
+    }
+    if columns.winrate {
+        cols.push(TableColumn::Winrate);
+    }
+    if columns.earned_rr {
+        cols.push(TableColumn::EarnedRr);
+    }
+    if columns.level {
+        cols.push(TableColumn::Level);
+    }
+    if show_skin {
+        cols.push(TableColumn::Skin);
+    }
+    cols
+}
+
+fn column_gutter_sides(column_index: usize, column_count: usize) -> (f32, f32) {
+    let gutter = COLUMN_GAP * 0.5;
+    (
+        if column_index > 0 { gutter } else { 0.0 },
+        if column_index + 1 < column_count { gutter } else { 0.0 },
+    )
+}
+
+fn table_column_content_width(column: TableColumn, widths: ColumnWidths) -> f32 {
+    match column {
+        TableColumn::Party => widths.party,
+        TableColumn::Star => widths.star,
+        TableColumn::Agent => widths.agent,
+        TableColumn::Name => widths.name,
+        TableColumn::Rank => widths.rank,
+        TableColumn::Rr => widths.rr,
+        TableColumn::PreviousRank => widths.previous_rank,
+        TableColumn::PeakRank => widths.peak_rank,
+        TableColumn::Leaderboard => widths.leaderboard,
+        TableColumn::Kd => widths.kd,
+        TableColumn::HeadshotPercent => widths.headshot_percent,
+        TableColumn::Winrate => widths.winrate,
+        TableColumn::EarnedRr => widths.earned_rr,
+        TableColumn::Level => widths.level,
+        TableColumn::Skin => widths.skin,
+    }
+}
+
+fn table_column_width(
+    column: TableColumn,
+    widths: ColumnWidths,
+    column_index: usize,
+    column_count: usize,
+) -> f32 {
+    let (left_gutter, right_gutter) = column_gutter_sides(column_index, column_count);
+    table_column_content_width(column, widths) + left_gutter + right_gutter
+}
+
 fn table_width(
     columns: &ColumnConfig,
     widths: ColumnWidths,
-    config: &Config,
     show_leaderboard: bool,
     show_skin: bool,
-    item_spacing_x: f32,
 ) -> f32 {
-    let mut width = widths.party + widths.star + widths.agent + widths.name + widths.rank;
-    let mut column_count: usize = 5;
-    if rr_column_visible(config) {
-        width += widths.rr;
-        column_count += 1;
-    }
-    if columns.previous_rank {
-        width += widths.previous_rank;
-        column_count += 1;
-    }
-    if columns.peak_rank {
-        width += widths.peak_rank;
-        column_count += 1;
-    }
-    if show_leaderboard {
-        width += widths.leaderboard;
-        column_count += 1;
-    }
-    if columns.kd {
-        width += widths.kd;
-        column_count += 1;
-    }
-    if columns.headshot_percent {
-        width += widths.headshot_percent;
-        column_count += 1;
-    }
-    if columns.winrate {
-        width += widths.winrate;
-        column_count += 1;
-    }
-    if columns.earned_rr {
-        width += widths.earned_rr;
-        column_count += 1;
-    }
-    if columns.level {
-        width += widths.level;
-        column_count += 1;
-    }
-    if show_skin {
-        width += widths.skin;
-        column_count += 1;
-    }
+    let columns = visible_table_columns(columns, show_leaderboard, show_skin);
+    let column_count = columns.len();
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| table_column_width(*column, widths, index, column_count))
+        .sum()
+}
 
-    width + item_spacing_x * (column_count.saturating_sub(1) as f32)
+fn column_rects(row_rect: Rect, columns: &[TableColumn], widths: ColumnWidths) -> Vec<Rect> {
+    let mut rects = Vec::with_capacity(columns.len());
+    let column_count = columns.len();
+    let mut x = row_rect.left();
+    for (index, column) in columns.iter().enumerate() {
+        let w = table_column_width(*column, widths, index, column_count);
+        rects.push(Rect::from_min_size(Pos2::new(x, row_rect.top()), Vec2::new(w, row_rect.height())));
+        x += w;
+    }
+    rects
+}
+
+fn cell_clip_rect(rect: Rect, column_index: usize, column_count: usize) -> Rect {
+    let (left_gutter, right_gutter) = column_gutter_sides(column_index, column_count);
+    let left = rect.left() + CELL_PAD + left_gutter;
+    let right = rect.right() - CELL_PAD - right_gutter;
+    Rect::from_min_max(
+        Pos2::new(left, rect.top()),
+        Pos2::new(right.max(left), rect.bottom()),
+    )
 }
 
 fn measure_column_widths(
@@ -515,7 +622,7 @@ where
         width = width.max(measure_text_width(ctx, body_font, &value));
     }
 
-    width + CELL_PAD * 2.0
+    width + CELL_PAD * 2.0 + HDR_DIVIDER_W
 }
 
 fn rank_column_width(
@@ -615,7 +722,7 @@ where
         width = width.max(value_width);
     }
 
-    width + CELL_PAD * 2.0
+    width + CELL_PAD * 2.0 + HDR_DIVIDER_W
 }
 
 fn skin_column_width(
@@ -646,7 +753,7 @@ fn skin_column_width(
         width = width.max(value_width);
     }
 
-    width + CELL_PAD * 2.0
+    width + CELL_PAD * 2.0 + HDR_DIVIDER_W
 }
 
 fn measure_text_width(ctx: &egui::Context, font: &egui::FontId, text: &str) -> f32 {
@@ -676,17 +783,16 @@ fn title_bar(
     let row_height = theme::header_font().size.max(theme::small_font().size);
     ui.horizontal(|ui| {
         ui.set_width(ui.max_rect().width());
-        render_title_star_label(ui);
+        ui.label(
+            RichText::new(format!("[ {} ]", state))
+                .font(theme::header_font())
+                .color(state_color(state)),
+        );
         let remaining_width = ui.available_width();
         ui.allocate_ui_with_layout(
             Vec2::new(remaining_width, row_height),
             Layout::right_to_left(Align::Center),
             |ui| {
-                ui.label(
-                    RichText::new(state.to_string())
-                        .font(theme::small_font())
-                        .color(state_color(state)),
-                );
                 if config.features.server_id {
                     if let Some(server_id) = match_context
                         .map(|context| context.server_id.as_str())
@@ -712,74 +818,99 @@ fn header_row(
     show_skin: bool,
     skin_label: &str,
 ) {
-    let origin = ui.cursor().min;
-    let full_w = ui.max_rect().width();
-    ui.painter().rect_filled(
-        Rect::from_min_size(origin, Vec2::new(full_w, HDR_H)),
-        2.0,
-        theme::HEADER_BG,
-    );
+    let table_w = table_width(c, widths, show_leaderboard, show_skin);
+    let (header_rect, _) =
+        ui.allocate_exact_size(Vec2::new(table_w, HDR_H), egui::Sense::hover());
+    ui.painter().rect_filled(header_rect, 0.0, theme::HEADER_BG);
+    ui.painter().rect_stroke(header_rect, 0.0, theme::inner_stroke());
 
-    ui.horizontal(|ui| {
-        ui.set_height(HDR_H);
-        let f = theme::small_font();
-        let clr = theme::TEXT_MUTED;
+    let columns = visible_table_columns(c, show_leaderboard, show_skin);
+    let column_count = columns.len();
+    let f = theme::small_font();
+    let clr = theme::TEXT_MUTED;
 
-        hdr_cell(ui, "", widths.party, &f, clr);
-        hdr_cell(ui, "", widths.star, &f, clr);
-        hdr_cell(ui, "AGENT", widths.agent, &f, clr);
-        hdr_cell(ui, "NAME", widths.name, &f, clr);
-        hdr_cell(ui, "RANK", widths.rank, &f, clr);
-        if c.rr {
-            hdr_cell(ui, "RR", widths.rr, &f, clr);
-        }
-        if c.previous_rank {
-            hdr_cell(ui, "PREV", widths.previous_rank, &f, clr);
-        }
-        if c.peak_rank {
-            hdr_cell(ui, "PEAK", widths.peak_rank, &f, clr);
-        }
-        if show_leaderboard {
-            hdr_cell(ui, "#", widths.leaderboard, &f, clr);
-        }
-        if c.kd {
-            hdr_cell(ui, "K/D", widths.kd, &f, clr);
-        }
-        if c.headshot_percent {
-            hdr_cell(ui, "HS%", widths.headshot_percent, &f, clr);
-        }
-        if c.winrate {
-            hdr_cell(ui, "WR%", widths.winrate, &f, clr);
-        }
-        if c.earned_rr {
-            hdr_cell(ui, "ΔRR", widths.earned_rr, &f, clr);
-        }
-        if c.level {
-            hdr_cell(ui, "LVL", widths.level, &f, clr);
-        }
-        if show_skin {
-            hdr_cell(ui, skin_label, widths.skin, &f, clr);
-        }
-    });
+    for (column_index, (column, rect)) in columns
+        .iter()
+        .zip(column_rects(header_rect, &columns, widths))
+        .enumerate()
+    {
+        paint_cell_divider(ui, rect);
+        let (label, align) = header_label_for(*column, skin_label);
+        paint_hdr_cell(ui, rect, label, &f, clr, align, column_index, column_count);
+    }
 }
 
-fn hdr_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, HDR_H), egui::Sense::hover());
-    if !text.is_empty() {
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            font.clone(),
-            color,
-        );
+fn header_label_for(column: TableColumn, skin_label: &str) -> (&str, HdrAlign) {
+    match column {
+        TableColumn::Party | TableColumn::Star => ("", HdrAlign::Center),
+        TableColumn::Agent => ("AGENT", HdrAlign::Left),
+        TableColumn::Name => ("NAME", HdrAlign::Center),
+        TableColumn::Rank => ("RANK", HdrAlign::Center),
+        TableColumn::Rr => ("RR", HdrAlign::Center),
+        TableColumn::PreviousRank => ("PREV", HdrAlign::Center),
+        TableColumn::PeakRank => ("PEAK", HdrAlign::Center),
+        TableColumn::Leaderboard => ("#", HdrAlign::Center),
+        TableColumn::Kd => ("K/D", HdrAlign::Center),
+        TableColumn::HeadshotPercent => ("HS%", HdrAlign::Center),
+        TableColumn::Winrate => ("WR%", HdrAlign::Center),
+        TableColumn::EarnedRr => ("ΔRR", HdrAlign::Center),
+        TableColumn::Level => ("LVL", HdrAlign::Center),
+        TableColumn::Skin => (skin_label, HdrAlign::Left),
     }
+}
+
+fn header_content_rect(cell: Rect) -> Rect {
+    Rect::from_min_max(
+        cell.min,
+        Pos2::new((cell.right() - HDR_DIVIDER_W).max(cell.left()), cell.bottom()),
+    )
+}
+
+fn paint_hdr_cell(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &str,
+    font: &egui::FontId,
+    color: egui::Color32,
+    align: HdrAlign,
+    column_index: usize,
+    column_count: usize,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    let content = header_content_rect(rect);
+    let clip = cell_clip_rect(content, column_index, column_count);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font.clone(), color);
+    if galley.size().x <= 0.0 {
+        return;
+    }
+
+    let x = match align {
+        HdrAlign::Left => clip.left(),
+        HdrAlign::Center => clip.left() + (clip.width() - galley.size().x) * 0.5,
+    };
+    let y = content.center().y - galley.size().y * 0.5;
+    ui.painter()
+        .with_clip_rect(clip)
+        .galley(Pos2::new(x, y), galley, color);
+}
+
+fn paint_cell_divider(ui: &mut Ui, rect: Rect) {
+    ui.painter().vline(
+        rect.right(),
+        rect.top()..=rect.bottom(),
+        theme::cell_divider_stroke(),
+    );
 }
 
 fn team_label(ui: &mut Ui, text: &str, team_id: &str) {
     ui.add_space(2.0);
     ui.label(
-        RichText::new(text)
+        RichText::new(format!("> {text}"))
             .font(theme::small_font())
             .color(team_color(team_id, text.eq_ignore_ascii_case("YOUR TEAM"))),
     );
@@ -801,7 +932,7 @@ fn player_rows(
     let groups = party_row_groups(&players, local_party_id, local_party_number);
     let mut row_rects = Vec::with_capacity(players.len());
 
-    for p in &players {
+    for (index, p) in players.iter().enumerate() {
         row_rects.push(player_row(
             ui,
             p,
@@ -812,6 +943,7 @@ fn player_rows(
             is_ally,
             show_leaderboard,
             show_skin,
+            index % 2 == 1,
         ));
     }
 
@@ -828,193 +960,288 @@ fn player_row(
     is_ally: bool,
     show_leaderboard: bool,
     show_skin: bool,
+    alt_row: bool,
 ) -> Rect {
     let c = &config.columns;
-    let bg = if is_ally {
+    let bg = if alt_row {
+        theme::ROW_BG_ALT
+    } else if is_ally {
         theme::ROW_BG_ALLY
     } else {
         theme::ROW_BG_ENEMY
     };
-    let origin = ui.cursor().min;
-    let full_w = ui.max_rect().width();
-    let row_rect = Rect::from_min_size(origin, Vec2::new(full_w, ROW_H));
-    ui.painter().rect_filled(row_rect, 2.0, bg);
+    let table_w = table_width(c, widths, show_leaderboard, show_skin);
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(table_w, ROW_H), egui::Sense::hover());
+    ui.painter().rect_filled(row_rect, 0.0, bg);
+    ui.painter().hline(
+        row_rect.left()..=row_rect.right(),
+        row_rect.bottom(),
+        theme::cell_divider_stroke(),
+    );
 
-    ui.horizontal(|ui| {
-        ui.set_height(ROW_H);
-        let f = theme::body_font();
-        let loading = loading_dots(ui.ctx());
+    let columns = visible_table_columns(c, show_leaderboard, show_skin);
+    let f = theme::body_font();
+    let loading = loading_dots(ui.ctx());
 
-        let _ = ui.allocate_exact_size(Vec2::new(widths.party, ROW_H), egui::Sense::hover());
+    let column_count = columns.len();
+    for (column_index, (column, rect)) in columns
+        .iter()
+        .zip(column_rects(row_rect, &columns, widths))
+        .enumerate()
+    {
+        paint_player_column(
+            ui,
+            *column,
+            rect,
+            p,
+            config,
+            is_ally,
+            local_party_id,
+            local_party_number,
+            &f,
+            &loading,
+            column_index,
+            column_count,
+        );
+    }
 
-        // Star
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.star, ROW_H), egui::Sense::hover());
-        if p.is_star_user {
-            paint_star_icon(ui, rect, PLAYER_STAR_SIZE);
+    row_rect
+}
+
+fn paint_player_column(
+    ui: &mut Ui,
+    column: TableColumn,
+    rect: Rect,
+    p: &PlayerDisplayData,
+    config: &Config,
+    is_ally: bool,
+    local_party_id: &str,
+    local_party_number: i32,
+    font: &egui::FontId,
+    loading: &str,
+    column_index: usize,
+    column_count: usize,
+) {
+    match column {
+        TableColumn::Party => {}
+        TableColumn::Star => {
+            if p.is_star_user {
+                paint_star_icon(ui, rect, PLAYER_STAR_SIZE);
+            }
         }
-
-        // Agent
-        text_cell(
-            ui,
-            &p.agent_name,
-            widths.agent,
-            &f,
-            theme::agent_color(&p.agent_name),
-        );
-
-        // Name
-        let display_name = player_display_name(p, config, local_party_id, local_party_number);
-        text_cell(
-            ui,
-            &display_name,
-            widths.name,
-            &f,
-            team_color(&p.team_id, is_ally),
-        );
-
-        // Rank (always shown)
-        if p.enriched {
-            rank_cell(
+        TableColumn::Agent => {
+            text_cell_at(
                 ui,
-                p.current_rank,
-                config,
-                widths.rank,
-                &f,
-                rank_color(p.current_rank),
+                &p.agent_name,
+                rect,
+                font,
+                theme::agent_color(&p.agent_name),
+                column_index,
+                column_count,
             );
-        } else {
-            text_cell(ui, &loading, widths.rank, &f, theme::TEXT_MUTED);
         }
-
-        if rr_column_visible(config) {
-            let t = rr_column_value(p, &loading);
-            centered_text_cell(ui, &t, widths.rr, &f, theme::TEXT_SECONDARY);
+        TableColumn::Name => {
+            let display_name = player_display_name(p, config, local_party_id, local_party_number);
+            text_cell_at(
+                ui,
+                &display_name,
+                rect,
+                font,
+                team_color(&p.team_id, is_ally),
+                column_index,
+                column_count,
+            );
         }
-
-        if c.previous_rank {
+        TableColumn::Rank => {
+            if p.enriched {
+                rank_cell_at(
+                    ui,
+                    p.current_rank,
+                    config,
+                    rect,
+                    font,
+                    rank_color(p.current_rank),
+                    column_index,
+                    column_count,
+                );
+            } else {
+                text_cell_at(
+                    ui,
+                    loading,
+                    rect,
+                    font,
+                    theme::TEXT_MUTED,
+                    column_index,
+                    column_count,
+                );
+            }
+        }
+        TableColumn::Rr => {
+            let t = rr_column_value(p, loading);
+            centered_text_cell_at(
+                ui,
+                &t,
+                rect,
+                font,
+                theme::TEXT_SECONDARY,
+                column_index,
+                column_count,
+            );
+        }
+        TableColumn::PreviousRank => {
             if p.enriched {
                 if p.previous_rank > 0 {
-                    rank_cell(
+                    rank_cell_at(
                         ui,
                         p.previous_rank,
                         config,
-                        widths.previous_rank,
-                        &f,
+                        rect,
+                        font,
                         rank_color(p.previous_rank),
+                        column_index,
+                        column_count,
                     );
                 } else {
-                    text_cell(
+                    text_cell_at(
                         ui,
                         "-",
-                        widths.previous_rank,
-                        &f,
+                        rect,
+                        font,
                         rank_color(p.previous_rank),
+                        column_index,
+                        column_count,
                     );
                 }
             } else {
-                text_cell(ui, &loading, widths.previous_rank, &f, theme::TEXT_MUTED);
+                text_cell_at(
+                    ui,
+                    loading,
+                    rect,
+                    font,
+                    theme::TEXT_MUTED,
+                    column_index,
+                    column_count,
+                );
             }
         }
-
-        if c.peak_rank {
+        TableColumn::PeakRank => {
             if p.enriched {
                 if p.peak_rank > 0 {
-                    rank_cell(
+                    rank_cell_at(
                         ui,
                         p.peak_rank,
                         config,
-                        widths.peak_rank,
-                        &f,
+                        rect,
+                        font,
                         rank_color(p.peak_rank),
+                        column_index,
+                        column_count,
                     );
                 } else {
-                    text_cell(ui, "-", widths.peak_rank, &f, rank_color(p.peak_rank));
+                    text_cell_at(
+                        ui,
+                        "-",
+                        rect,
+                        font,
+                        rank_color(p.peak_rank),
+                        column_index,
+                        column_count,
+                    );
                 }
             } else {
-                text_cell(ui, &loading, widths.peak_rank, &f, theme::TEXT_MUTED);
+                text_cell_at(
+                    ui,
+                    loading,
+                    rect,
+                    font,
+                    theme::TEXT_MUTED,
+                    column_index,
+                    column_count,
+                );
             }
         }
-
-        if show_leaderboard {
-            let t = leaderboard_column_value(p, &loading);
-            text_cell(ui, &t, widths.leaderboard, &f, theme::TEXT_SECONDARY);
+        TableColumn::Leaderboard => {
+            let t = leaderboard_column_value(p, loading);
+            centered_text_cell_at(
+                ui,
+                &t,
+                rect,
+                font,
+                theme::TEXT_SECONDARY,
+                column_index,
+                column_count,
+            );
         }
-
-        if c.kd {
-            let t = kd_column_value(p, &loading);
+        TableColumn::Kd => {
+            let t = kd_column_value(p, loading);
             let clr = if p.enriched {
                 theme::kd_color(p.kd)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, widths.kd, &f, clr);
+            centered_text_cell_at(ui, &t, rect, font, clr, column_index, column_count);
         }
-
-        if c.headshot_percent {
-            let t = headshot_column_value(p, &loading);
+        TableColumn::HeadshotPercent => {
+            let t = headshot_column_value(p, loading);
             let clr = if p.enriched {
                 theme::hs_color(p.headshot_percent)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, widths.headshot_percent, &f, clr);
+            centered_text_cell_at(ui, &t, rect, font, clr, column_index, column_count);
         }
-
-        if c.winrate {
-            let t = winrate_column_value(p, &loading);
+        TableColumn::Winrate => {
+            let t = winrate_column_value(p, loading);
             let clr = if p.enriched {
                 theme::winrate_color(p.winrate)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, widths.winrate, &f, clr);
+            centered_text_cell_at(ui, &t, rect, font, clr, column_index, column_count);
         }
-
-        if c.earned_rr {
+        TableColumn::EarnedRr => {
             if p.enriched {
-                delta_rr_cell(ui, p, widths.earned_rr, &f);
+                delta_rr_cell_at(ui, p, rect, font, column_index, column_count);
             } else {
-                centered_text_cell(ui, &loading, widths.earned_rr, &f, theme::TEXT_MUTED);
+                centered_text_cell_at(
+                    ui,
+                    loading,
+                    rect,
+                    font,
+                    theme::TEXT_MUTED,
+                    column_index,
+                    column_count,
+                );
             }
         }
-
-        if c.level {
+        TableColumn::Level => {
             let t = level_column_value(p);
             let clr = if p.account_level > 0 {
                 theme::level_color(p.account_level)
             } else {
                 theme::TEXT_MUTED
             };
-            centered_text_cell(ui, &t, widths.level, &f, clr);
+            centered_text_cell_at(ui, &t, rect, font, clr, column_index, column_count);
         }
-
-        if show_skin {
+        TableColumn::Skin => {
             let skin_name = format_skin_name(
                 &p.skin_name,
                 &config.overlay.weapon,
                 config.overlay.truncate_skins,
             );
-            skin_cell(
+            skin_cell_at(
                 ui,
                 &skin_name,
                 p.skin_level,
                 p.skin_level_total,
                 p.skin_color,
-                widths.skin,
-                &f,
+                rect,
+                font,
+                column_index,
+                column_count,
             );
         }
-    });
-
-    row_rect
-}
-
-fn render_title_star_label(ui: &mut Ui) {
-    ui.label(
-        RichText::new("STAR CLIENT")
-            .font(theme::header_font())
-            .color(theme::STAR_COLOR),
-    );
+    }
 }
 
 fn paint_star_icon(ui: &mut Ui, rect: Rect, size: f32) {
@@ -1066,7 +1293,15 @@ fn load_overlay_star_texture(ctx: &egui::Context) -> Option<egui::TextureHandle>
     }
 }
 
-fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
+fn text_cell_at(
+    ui: &mut Ui,
+    text: &str,
+    rect: Rect,
+    font: &egui::FontId,
+    color: egui::Color32,
+    column_index: usize,
+    column_count: usize,
+) {
     let mut job = LayoutJob::default();
     job.append(
         text,
@@ -1077,75 +1312,99 @@ fn text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::
             ..Default::default()
         },
     );
-    layout_job_cell(ui, job, w, color);
+    layout_job_cell_at(ui, job, rect, color, column_index, column_count);
 }
 
-fn centered_text_cell(ui: &mut Ui, text: &str, w: f32, font: &egui::FontId, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        font.clone(),
-        color,
-    );
+fn centered_text_cell_at(
+    ui: &mut Ui,
+    text: &str,
+    rect: Rect,
+    font: &egui::FontId,
+    color: egui::Color32,
+    column_index: usize,
+    column_count: usize,
+) {
+    let clip_rect = cell_clip_rect(rect, column_index, column_count);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font.clone(), color);
+    if galley.size().x <= 0.0 {
+        return;
+    }
+
+    ui.painter()
+        .with_clip_rect(clip_rect)
+        .galley(
+            Pos2::new(
+                clip_rect.left() + (clip_rect.width() - galley.size().x) * 0.5,
+                rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            color,
+        );
 }
 
-fn centered_layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
-    let clip_rect = Rect::from_min_max(
-        Pos2::new(rect.left() + CELL_PAD, rect.top()),
-        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
-    );
+fn centered_layout_job_cell_at(
+    ui: &mut Ui,
+    job: LayoutJob,
+    rect: Rect,
+    fallback_color: egui::Color32,
+    column_index: usize,
+    column_count: usize,
+) {
+    let clip_rect = cell_clip_rect(rect, column_index, column_count);
     let galley = ui.painter().layout_job(job);
     if galley.size().x <= 0.0 {
         return;
     }
 
-    let painter = ui.painter().with_clip_rect(clip_rect);
-    painter.galley(
-        Pos2::new(
-            clip_rect.center().x - galley.size().x / 2.0,
-            rect.center().y - galley.size().y / 2.0,
-        ),
-        galley,
-        fallback_color,
-    );
+    ui.painter()
+        .with_clip_rect(clip_rect)
+        .galley(
+            Pos2::new(
+                clip_rect.left() + (clip_rect.width() - galley.size().x) * 0.5,
+                rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            fallback_color,
+        );
 }
 
-fn layout_job_cell(ui: &mut Ui, job: LayoutJob, w: f32, fallback_color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
-    let clip_rect = Rect::from_min_max(
-        Pos2::new(rect.left() + CELL_PAD, rect.top()),
-        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
-    );
+fn layout_job_cell_at(
+    ui: &mut Ui,
+    job: LayoutJob,
+    rect: Rect,
+    fallback_color: egui::Color32,
+    column_index: usize,
+    column_count: usize,
+) {
+    let clip_rect = cell_clip_rect(rect, column_index, column_count);
     let galley = ui.painter().layout_job(job);
     if galley.size().x <= 0.0 {
         return;
     }
 
-    let painter = ui.painter().with_clip_rect(clip_rect);
-    painter.galley(
-        Pos2::new(clip_rect.left(), rect.center().y - galley.size().y / 2.0),
-        galley,
-        fallback_color,
-    );
+    ui.painter()
+        .with_clip_rect(clip_rect)
+        .galley(
+            Pos2::new(clip_rect.left(), rect.center().y - galley.size().y * 0.5),
+            galley,
+            fallback_color,
+        );
 }
 
-fn rank_cell(
+fn rank_cell_at(
     ui: &mut Ui,
     tier: i32,
     config: &Config,
-    w: f32,
+    rect: Rect,
     font: &egui::FontId,
     color: egui::Color32,
+    column_index: usize,
+    column_count: usize,
 ) {
     let (label, suffix) = format_rank_parts(tier, config);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
-    let clip_rect = Rect::from_min_max(
-        Pos2::new(rect.left() + CELL_PAD, rect.top()),
-        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
-    );
+    let clip_rect = cell_clip_rect(rect, column_index, column_count);
     let painter = ui.painter();
 
     let mut label_job = LayoutJob::default();
@@ -1210,20 +1469,18 @@ fn rank_cell(
     );
 }
 
-fn skin_cell(
+fn skin_cell_at(
     ui: &mut Ui,
     skin_name: &str,
     skin_level: usize,
     skin_level_total: usize,
     skin_color: egui::Color32,
-    w: f32,
+    rect: Rect,
     font: &egui::FontId,
+    column_index: usize,
+    column_count: usize,
 ) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, ROW_H), egui::Sense::hover());
-    let clip_rect = Rect::from_min_max(
-        Pos2::new(rect.left() + CELL_PAD, rect.top()),
-        Pos2::new(rect.right() - CELL_PAD, rect.bottom()),
-    );
+    let clip_rect = cell_clip_rect(rect, column_index, column_count);
     let painter = ui.painter().with_clip_rect(clip_rect);
     let bar_width = skin_upgrade_bar_width(skin_level_total);
     let bar_rect = if bar_width > 0.0 && bar_width < clip_rect.width() {
@@ -1317,7 +1574,14 @@ fn skin_upgrade_bar_width(skin_level_total: usize) -> f32 {
     }
 }
 
-fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::FontId) {
+fn delta_rr_cell_at(
+    ui: &mut Ui,
+    player: &PlayerDisplayData,
+    rect: Rect,
+    font: &egui::FontId,
+    column_index: usize,
+    column_count: usize,
+) {
     let mut job = LayoutJob::default();
     let base = TextFormat {
         font_id: font.clone(),
@@ -1327,7 +1591,14 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
 
     if !player.has_comp_update || (player.earned_rr == 0 && player.afk_penalty == 0) {
         job.append("-", 0.0, base);
-        centered_layout_job_cell(ui, job, w, theme::TEXT_MUTED);
+        centered_layout_job_cell_at(
+            ui,
+            job,
+            rect,
+            theme::TEXT_MUTED,
+            column_index,
+            column_count,
+        );
         return;
     }
 
@@ -1363,7 +1634,14 @@ fn delta_rr_cell(ui: &mut Ui, player: &PlayerDisplayData, w: f32, font: &egui::F
         },
     );
 
-    centered_layout_job_cell(ui, job, w, theme::TEXT_PRIMARY);
+    centered_layout_job_cell_at(
+        ui,
+        job,
+        rect,
+        theme::TEXT_PRIMARY,
+        column_index,
+        column_count,
+    );
 }
 
 fn state_color(state: &GameState) -> egui::Color32 {
@@ -1592,9 +1870,9 @@ fn last_played_section(ui: &mut Ui, players: &[PlayerDisplayData], local_puuid: 
 
     ui.add_space(8.0);
     ui.label(
-        RichText::new("LAST SEEN")
+        RichText::new("// last seen")
             .font(theme::small_regular_font())
-            .color(theme::TEXT_MUTED),
+            .color(theme::PANEL_LABEL),
     );
 
     let my_team = local_team_id(players, local_puuid);
@@ -1719,7 +1997,7 @@ fn paint_party_outlines(ui: &mut Ui, row_rects: &[Rect], groups: &[(usize, usize
         let rect = Rect::from_min_max(first.min, last.max).shrink(PARTY_OUTLINE_INSET);
         ui.painter().rect_stroke(
             rect,
-            3.0,
+            0.0,
             Stroke::new(
                 1.0,
                 theme::party_color(party_number).gamma_multiply(PARTY_OUTLINE_OPACITY),
