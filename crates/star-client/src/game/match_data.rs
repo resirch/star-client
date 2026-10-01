@@ -10,6 +10,7 @@ pub struct MapInfo {
 pub struct MatchContext {
     pub map: MapInfo,
     pub queue: String,
+    pub mode: String,
     pub server_id: String,
 }
 
@@ -23,6 +24,7 @@ pub async fn fetch_pregame_context(
     Ok(MatchContext {
         map: resolve_map_name(api, &map_id).await,
         queue: pregame.queue_i_d.unwrap_or_else(|| "competitive".into()),
+        mode: pregame.mode.unwrap_or_default(),
         server_id: pregame.game_pod_id.unwrap_or_default(),
     })
 }
@@ -37,6 +39,7 @@ pub async fn fetch_coregame_context(
     Ok(MatchContext {
         map: resolve_map_name(api, &map_id).await,
         queue: coregame.queue_i_d.unwrap_or_else(|| "competitive".into()),
+        mode: coregame.mode_i_d.unwrap_or_default(),
         server_id: coregame.game_pod_id.unwrap_or_default(),
     })
 }
@@ -81,6 +84,7 @@ pub fn mode_display_name(mode_id: &str) -> &str {
         s if s.contains("swiftplay") => "Swiftplay",
         s if s.contains("hurm") => "Team Deathmatch",
         s if s.contains("premier") => "Premier",
+        s if s.contains("gauntlet") => "Gauntlet",
         _ => "Unknown",
     }
 }
