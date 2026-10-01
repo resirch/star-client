@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::game::party;
+use crate::game::teams;
 use crate::riot::api::RiotApiClient;
 use crate::riot::types::*;
 use crate::stats::performance::extract_player_performance;
@@ -63,21 +64,27 @@ pub async fn fetch_pregame_players(
     }
     api.fetch_skin_levels().await.ok();
 
+    let pregame_teams = pregame_match_teams(&pregame);
     let mut puuids: Vec<String> = Vec::new();
-    if let Some(team) = &pregame.ally_team {
+    for team in &pregame_teams {
         for p in &team.players {
             puuids.push(p.subject.clone());
         }
     }
 
-    tracing::debug!("Pregame ally_team puuids: {}", puuids.len());
+    tracing::debug!(
+        "Pregame roster puuids: {} across {} teams",
+        puuids.len(),
+        pregame_teams.len()
+    );
     let names = api.get_names(&puuids).await.unwrap_or_default();
     tracing::debug!("Pregame name service returned {} entries", names.len());
     let name_map: HashMap<String, &NameServiceEntry> =
         names.iter().map(|n| (n.subject.clone(), n)).collect();
 
     let mut players = Vec::new();
-    if let Some(team) = &pregame.ally_team {
+    for (team_index, team) in pregame_teams.iter().enumerate() {
+        let team_id = roster_key_for_pregame_team(team, team_index);
         for p in &team.players {
             let mut display = build_basic_player(&p.subject, &name_map);
 
@@ -92,7 +99,8 @@ pub async fn fetch_pregame_players(
                 display.agent_icon = agent_icon;
             }
 
-            display.team_id = team.team_i_d.clone().unwrap_or_default();
+            display.team_id = team_id.clone();
+            display.roster_team_id = team_id.clone();
             if let Some(party_id) = p.party_id.as_deref().filter(|id| !id.is_empty()) {
                 display.party_id = party_id.to_string();
             }
@@ -101,6 +109,9 @@ pub async fn fetch_pregame_players(
     }
 
     party::apply_match_party_ids(&mut players);
+    capture_match_party_ids(&mut players);
+    sanitize_roster_team_ids(&mut players);
+    teams::apply_incognito_team_markers(&mut players);
     tracing::debug!("Built {} pregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
@@ -169,14 +180,171 @@ pub async fn fetch_coregame_players(
     }
 
     party::apply_match_party_ids(&mut players);
+    capture_match_party_ids(&mut players);
+    finalize_roster_team_ids_from_match_team(&mut players);
+    teams::apply_incognito_team_markers(&mut players);
     tracing::debug!("Built {} coregame PlayerDisplayData entries", players.len());
     Ok(players)
+}
+
+/// Clears roster IDs that are not shared by exactly two players in the lobby.
+pub fn sanitize_roster_team_ids(players: &mut [PlayerDisplayData]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for player in players.iter() {
+        if !player.roster_team_id.is_empty() {
+            *counts.entry(player.roster_team_id.clone()).or_insert(0) += 1;
+        }
+    }
+
+    for player in players.iter_mut() {
+        if !player.roster_team_id.is_empty()
+            && counts.get(&player.roster_team_id).copied() != Some(2)
+        {
+            player.roster_team_id.clear();
+        }
+    }
+}
+
+/// Records duo party IDs from the match payload for stable Gauntlet team grouping.
+fn capture_match_party_ids(players: &mut [PlayerDisplayData]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for player in players.iter() {
+        if !player.party_id.is_empty() {
+            *counts.entry(player.party_id.clone()).or_insert(0) += 1;
+        }
+    }
+
+    for player in players.iter_mut() {
+        player.match_party_id.clear();
+        if counts.get(&player.party_id).copied() == Some(2) {
+            player.match_party_id = player.party_id.clone();
+        }
+    }
+}
+
+fn roster_key_for_pregame_team(team: &PregameTeam, team_index: usize) -> String {
+    let team_id = team.team_i_d.clone().unwrap_or_default();
+    if !team_id.is_empty() && !teams::is_standard_team_id(&team_id) {
+        return team_id;
+    }
+    format!("pregame-team:{team_index}")
+}
+
+pub fn roster_team_map_from_pregame(pregame: &PregameMatchResponse) -> HashMap<String, String> {
+    let mut roster_by_puuid: HashMap<String, String> = HashMap::new();
+    for (team_index, team) in pregame_match_teams(pregame).iter().enumerate() {
+        let roster_key = roster_key_for_pregame_team(team, team_index);
+        for player in &team.players {
+            roster_by_puuid.insert(player.subject.clone(), roster_key.clone());
+        }
+    }
+    roster_by_puuid
+}
+
+pub fn roster_team_map_from_players(players: &[PlayerDisplayData]) -> HashMap<String, String> {
+    players
+        .iter()
+        .filter(|player| !player.roster_team_id.is_empty())
+        .map(|player| (player.puuid.clone(), player.roster_team_id.clone()))
+        .collect()
+}
+
+pub fn merge_roster_team_cache(
+    cache: &mut HashMap<String, String>,
+    extra: &HashMap<String, String>,
+) {
+    for (puuid, team_id) in extra {
+        cache.insert(puuid.clone(), team_id.clone());
+    }
+}
+
+pub fn apply_roster_team_cache(
+    players: &mut [PlayerDisplayData],
+    cache: &HashMap<String, String>,
+) {
+    for player in players.iter_mut() {
+        if let Some(team_id) = cache.get(&player.puuid) {
+            player.roster_team_id = team_id.clone();
+        }
+    }
+}
+
+pub async fn backfill_roster_teams_from_pregame(
+    api: &mut RiotApiClient,
+    pregame_match_id: &str,
+    players: &mut [PlayerDisplayData],
+) -> Result<HashMap<String, String>> {
+    if pregame_match_id.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let pregame = api.get_pregame_match(pregame_match_id).await?;
+    let roster_by_puuid = roster_team_map_from_pregame(&pregame);
+
+    apply_roster_team_cache(players, &roster_by_puuid);
+    sanitize_roster_team_ids(players);
+    Ok(roster_by_puuid)
+}
+
+fn finalize_roster_team_ids_from_match_team(players: &mut [PlayerDisplayData]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for player in players.iter() {
+        if !player.team_id.is_empty() && !teams::is_standard_team_id(&player.team_id) {
+            *counts.entry(player.team_id.clone()).or_insert(0) += 1;
+        }
+    }
+
+    for player in players.iter_mut() {
+        if player.roster_team_id.is_empty()
+            && counts.get(&player.team_id).copied() == Some(2)
+        {
+            player.roster_team_id = player.team_id.clone();
+        }
+    }
+}
+
+fn pregame_match_teams(pregame: &PregameMatchResponse) -> Vec<PregameTeam> {
+    let mut teams = pregame.teams.clone();
+    let mut rostered_puuids: HashSet<String> = teams
+        .iter()
+        .flat_map(|team| team.players.iter().map(|player| player.subject.clone()))
+        .collect();
+
+    for extra in [&pregame.ally_team, &pregame.enemy_team] {
+        if let Some(team) = extra {
+            let has_new_players = team
+                .players
+                .iter()
+                .any(|player| !rostered_puuids.contains(&player.subject));
+            if has_new_players {
+                teams.push(team.clone());
+                for player in &team.players {
+                    rostered_puuids.insert(player.subject.clone());
+                }
+            }
+        }
+    }
+
+    if teams.is_empty() {
+        if let Some(ally) = &pregame.ally_team {
+            teams.push(ally.clone());
+        }
+        if let Some(enemy) = &pregame.enemy_team {
+            teams.push(enemy.clone());
+        }
+    }
+
+    teams
 }
 
 /// Marks players that share the local player's party using chat presences.
 /// This ensures incognito party members have their `party_id` set so the
 /// overlay can reveal their names (matching in-game behaviour).
 pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [PlayerDisplayData]) {
+    if players.len() >= 10 {
+        return;
+    }
+
     let presences = match api.get_valorant_presences().await {
         Ok(p) => p,
         Err(_) => return,
@@ -227,16 +395,12 @@ fn apply_local_presence_party(
     let existing_party_id = existing_local
         .map(|player| player.party_id.clone())
         .unwrap_or_default();
-    let existing_party_number = existing_local
-        .map(|player| player.party_number)
-        .unwrap_or(0);
     let party_number = local_presence_party_number(players, local_puuid);
 
     for player in players.iter_mut() {
         let in_presence_party = presence_party_puuids.contains(player.puuid.as_str());
-        let in_existing_local_party = (!existing_party_id.is_empty()
-            && player.party_id == existing_party_id)
-            || (existing_party_number > 0 && player.party_number == existing_party_number);
+        let in_existing_local_party = !existing_party_id.is_empty()
+            && player.party_id == existing_party_id;
         if in_presence_party || in_existing_local_party {
             player.party_id = local_party_id.to_string();
             player.party_number = party_number;
@@ -325,6 +489,11 @@ fn build_basic_player(
             .or_else(|| name_entry.display_name.clone())
             .unwrap_or_default();
         display.tag_line = name_entry.tag_line.clone().unwrap_or_default();
+        display.incognito_display_name = name_entry
+            .display_name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_default();
     }
 
     display
@@ -831,11 +1000,13 @@ mod tests {
         apply_competitive_update, apply_local_presence_party, build_season_lookup,
         earned_rr_from_update, extract_latest_comp_update, extract_rank_data,
         local_presence_party_number, normalize_overlay_weapon, preferred_recent_match_id,
-        selected_character_id, SeasonLookup,
+        roster_team_map_from_pregame, sanitize_roster_team_ids, selected_character_id,
+        SeasonLookup,
     };
     use crate::riot::types::{
         CompetitiveUpdate, CompetitiveUpdatesResponse, ContentResponse, ContentSeason, MmrResponse,
-        PlayerDisplayData, QueueSkill, SeasonalInfo,
+        PlayerDisplayData, PregameMatchResponse, PregamePlayer, PregameTeam, QueueSkill,
+        SeasonalInfo,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -920,6 +1091,50 @@ mod tests {
     }
 
     #[test]
+    fn presence_party_does_not_merge_unrelated_players_by_party_number() {
+        let mut players = vec![
+            PlayerDisplayData {
+                puuid: "local".into(),
+                party_id: "carried".into(),
+                match_party_id: "match-local".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "mate".into(),
+                party_id: "carried".into(),
+                match_party_id: "match-local".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-a".into(),
+                party_id: "other".into(),
+                match_party_id: "match-other".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "other-b".into(),
+                party_id: "other".into(),
+                match_party_id: "match-other".into(),
+                party_number: 1,
+                ..Default::default()
+            },
+        ];
+        let presence_party = HashSet::from(["local", "mate"]);
+
+        apply_local_presence_party(&mut players, "local", "live-party", &presence_party);
+
+        assert_eq!(players[0].party_id, "live-party");
+        assert_eq!(players[1].party_id, "live-party");
+        assert_eq!(players[2].party_id, "other");
+        assert_eq!(players[3].party_id, "other");
+        assert_eq!(players[0].match_party_id, "match-local");
+        assert_eq!(players[2].match_party_id, "match-other");
+    }
+
+    #[test]
     fn presence_party_keeps_existing_local_mates_missing_from_presence() {
         let mut players = vec![
             PlayerDisplayData {
@@ -949,6 +1164,97 @@ mod tests {
         assert_eq!(players[0].party_number, 1);
         assert_eq!(players[1].party_number, 1);
         assert_eq!(players[2].party_number, 1);
+    }
+
+    #[test]
+    fn pregame_roster_map_uses_team_index_when_team_id_is_blue_or_red() {
+        let pregame = PregameMatchResponse {
+            i_d: "match".into(),
+            map_i_d: None,
+            mode: None,
+            queue_i_d: None,
+            provisioning_flow_i_d: None,
+            game_pod_id: None,
+            teams: vec![
+                PregameTeam {
+                    team_i_d: Some("Blue".into()),
+                    players: vec![
+                        PregamePlayer {
+                            subject: "a".into(),
+                            character_i_d: None,
+                            character_selection_state: None,
+                            player_identity: None,
+                            is_captain: None,
+                            party_id: None,
+                        },
+                        PregamePlayer {
+                            subject: "b".into(),
+                            character_i_d: None,
+                            character_selection_state: None,
+                            player_identity: None,
+                            is_captain: None,
+                            party_id: None,
+                        },
+                    ],
+                },
+                PregameTeam {
+                    team_i_d: Some("Blue".into()),
+                    players: vec![
+                        PregamePlayer {
+                            subject: "c".into(),
+                            character_i_d: None,
+                            character_selection_state: None,
+                            player_identity: None,
+                            is_captain: None,
+                            party_id: None,
+                        },
+                        PregamePlayer {
+                            subject: "d".into(),
+                            character_i_d: None,
+                            character_selection_state: None,
+                            player_identity: None,
+                            is_captain: None,
+                            party_id: None,
+                        },
+                    ],
+                },
+            ],
+            ally_team: None,
+            enemy_team: None,
+        };
+
+        let roster = roster_team_map_from_pregame(&pregame);
+        assert_eq!(roster.get("a"), roster.get("b"));
+        assert_eq!(roster.get("c"), roster.get("d"));
+        assert_ne!(roster.get("a"), roster.get("c"));
+
+        let mut players = vec![
+            PlayerDisplayData {
+                puuid: "a".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "b".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "c".into(),
+                ..Default::default()
+            },
+            PlayerDisplayData {
+                puuid: "d".into(),
+                ..Default::default()
+            },
+        ];
+        for player in &mut players {
+            if let Some(team_id) = roster.get(&player.puuid) {
+                player.roster_team_id = team_id.clone();
+            }
+        }
+        sanitize_roster_team_ids(&mut players);
+        assert!(!players[0].roster_team_id.is_empty());
+        assert_eq!(players[0].roster_team_id, players[1].roster_team_id);
+        assert_eq!(players[2].roster_team_id, players[3].roster_team_id);
     }
 
     #[test]

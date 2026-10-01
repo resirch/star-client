@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::discord::rpc::DiscordRpc;
 use crate::game::history::{EncounterRecord, PlayerHistory};
 use crate::game::match_data::{self, MatchContext};
+use crate::game::teams;
 use crate::game::party;
 use crate::game::players;
 use crate::game::state::{self, GameState};
@@ -22,6 +23,10 @@ pub struct AppState {
     pub match_context: Option<MatchContext>,
     pub auto_visible: bool,
     pub last_match_id: String,
+    /// Last agent-select match id (used to recover Gauntlet duo teams in coregame).
+    pub pregame_match_id: String,
+    /// PUUID -> pregame team id (duo grouping), cached for the current match.
+    pub roster_team_by_puuid: HashMap<String, String>,
     pub local_puuid: String,
 }
 
@@ -41,6 +46,8 @@ impl AppState {
             match_context: None,
             auto_visible: false,
             last_match_id: String::new(),
+            pregame_match_id: String::new(),
+            roster_team_by_puuid: HashMap::new(),
             local_puuid: String::new(),
         }
     }
@@ -194,6 +201,11 @@ pub async fn run_data_loop(
                     state.players.clear();
                     state.match_context = None;
                     state.last_match_id.clear();
+                    state.pregame_match_id.clear();
+                    state.roster_team_by_puuid.clear();
+                }
+                GameState::Pregame { match_id } => {
+                    state.pregame_match_id = match_id.clone();
                 }
                 _ => {}
             }
@@ -315,6 +327,7 @@ pub async fn run_data_loop(
                         if carry_over_party(player, prev) {
                             carried_party += 1;
                         }
+                        carry_over_roster_team(player, prev);
                     }
                 }
                 tracing::debug!(
@@ -351,6 +364,46 @@ pub async fn run_data_loop(
                 }
             };
             carry_over_existing_enrichment(&mut players_data, &existing_players_by_puuid);
+            carry_over_roster_teams(&mut players_data, &existing_players_by_puuid);
+
+            let mut roster_cache_update: HashMap<String, String> = HashMap::new();
+            if matches!(&new_state, GameState::Ingame { .. }) {
+                let (mut pregame_match_id, mut roster_cache) = {
+                    let state = app_state.read().await;
+                    (state.pregame_match_id.clone(), state.roster_team_by_puuid.clone())
+                };
+                if pregame_match_id.is_empty() {
+                    if let Ok(pregame_player) = api_guard.get_pregame_player().await {
+                        pregame_match_id = pregame_player.match_i_d;
+                    }
+                }
+                if !pregame_match_id.is_empty() {
+                    match players::backfill_roster_teams_from_pregame(
+                        &mut api_guard,
+                        &pregame_match_id,
+                        &mut players_data,
+                    )
+                    .await
+                    {
+                        Ok(map) => {
+                            players::merge_roster_team_cache(&mut roster_cache, &map);
+                            roster_cache_update = map;
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                "Could not backfill Gauntlet roster teams from pregame {}: {}",
+                                pregame_match_id,
+                                error
+                            );
+                        }
+                    }
+                }
+                players::apply_roster_team_cache(&mut players_data, &roster_cache);
+                players::sanitize_roster_team_ids(&mut players_data);
+            } else if matches!(&new_state, GameState::Pregame { .. }) {
+                roster_cache_update = players::roster_team_map_from_players(&players_data);
+            }
+
             let previous_players_by_puuid: HashMap<String, PlayerDisplayData> = {
                 let state = app_state.read().await;
                 if state.last_match_id != match_id {
@@ -431,6 +484,14 @@ pub async fn run_data_loop(
             // Show basic info immediately
             {
                 let mut state = app_state.write().await;
+                players::merge_roster_team_cache(
+                    &mut state.roster_team_by_puuid,
+                    &roster_cache_update,
+                );
+                players::merge_roster_team_cache(
+                    &mut state.roster_team_by_puuid,
+                    &players::roster_team_map_from_players(&players_data),
+                );
                 state.players = players_data;
                 state.match_context = ctx;
                 state.last_match_id = match_id.clone();
@@ -878,10 +939,22 @@ fn merge_live_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<Play
             if !latest.party_id.is_empty() {
                 current.party_id = latest.party_id;
             }
+            if !latest.match_party_id.is_empty() {
+                current.match_party_id = latest.match_party_id;
+            }
+            if !latest.roster_team_id.is_empty() {
+                current.roster_team_id = latest.roster_team_id;
+            }
             if latest.party_number > 0 {
                 current.party_number = latest.party_number;
             }
             current.is_incognito = latest.is_incognito;
+            if !latest.incognito_display_name.is_empty() {
+                current.incognito_display_name = latest.incognito_display_name;
+            }
+            if latest.incognito_team_marker.is_some() {
+                current.incognito_team_marker = latest.incognito_team_marker;
+            }
             merged.push(current);
         } else {
             merged.push(latest);
@@ -921,6 +994,14 @@ fn merge_or_swap_side_change(
     existing: &mut Vec<PlayerDisplayData>,
     refreshed: Vec<PlayerDisplayData>,
 ) {
+    let match_context = None;
+    if teams::roster_uses_multi_team_layout(existing, match_context)
+        || teams::roster_uses_multi_team_layout(&refreshed, match_context)
+    {
+        merge_match_players(existing, refreshed);
+        return;
+    }
+
     if refreshed.is_empty() {
         swap_team_colors(existing);
         return;
@@ -1243,7 +1324,11 @@ async fn apply_party_lookups(
     players: &mut [PlayerDisplayData],
     party_finder: bool,
 ) {
+    let skip_history_party_finder = players.len() >= 10
+        || teams::duo_party_group_count_for_roster(players) >= teams::MIN_DUO_PARTY_GROUPS_FOR_MULTI_TEAM;
+
     if party_finder
+        && !skip_history_party_finder
         && tokio::time::timeout(PARTY_LOOKUP_TIMEOUT, party::detect_parties(api, players))
             .await
             .is_err()
@@ -1262,12 +1347,43 @@ async fn apply_party_lookups(
     }
 }
 
+fn carry_over_roster_team(player: &mut PlayerDisplayData, source: &PlayerDisplayData) -> bool {
+    if player.roster_team_id.is_empty() && !source.roster_team_id.is_empty() {
+        player.roster_team_id = source.roster_team_id.clone();
+        return true;
+    }
+    if player.roster_team_id.is_empty()
+        && !source.team_id.is_empty()
+        && !teams::is_standard_team_id(&source.team_id)
+    {
+        player.roster_team_id = source.team_id.clone();
+        return true;
+    }
+    false
+}
+
+fn carry_over_roster_teams(
+    players: &mut [PlayerDisplayData],
+    existing: &HashMap<String, PlayerDisplayData>,
+) {
+    for player in players {
+        if let Some(source) = existing.get(&player.puuid) {
+            carry_over_roster_team(player, source);
+        }
+    }
+}
+
 fn carry_over_party(player: &mut PlayerDisplayData, source: &PlayerDisplayData) -> bool {
     let mut carried = false;
     if player.party_id.is_empty() && !source.party_id.is_empty() {
         player.party_id = source.party_id.clone();
         carried = true;
     }
+    if player.match_party_id.is_empty() && !source.match_party_id.is_empty() {
+        player.match_party_id = source.match_party_id.clone();
+        carried = true;
+    }
+    carried |= carry_over_roster_team(player, source);
     if player.party_number <= 0 && source.party_number > 0 {
         player.party_number = source.party_number;
         carried = true;

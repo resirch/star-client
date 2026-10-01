@@ -1,6 +1,7 @@
 use crate::assets;
 use crate::config::{ColumnConfig, Config};
 use crate::game::match_data::MatchContext;
+use crate::game::teams::{team_layout, TeamSection};
 use crate::game::state::GameState;
 use crate::overlay::theme;
 use crate::riot::types::{rank_color, PlayerDisplayData};
@@ -101,6 +102,7 @@ pub fn render_overlay(
         ctx,
         game_state,
         visible_players,
+        match_context,
         columns,
         config,
         local_puuid,
@@ -123,6 +125,12 @@ pub fn render_overlay(
                     ui.set_max_height(layout.frame_height);
                     paint_panel_label(ui, "star-client");
                     title_bar(ui, game_state, match_context, config);
+                    let ingame = matches!(game_state, GameState::Ingame { .. });
+                    let team_layout =
+                        team_layout(visible_players, local_puuid, match_context, ingame);
+                    if let Some(notice) = team_layout.notice {
+                        paint_team_grouping_notice(ui, notice);
+                    }
                     if visible_players.is_empty() {
                         ui.add_space(6.0);
                         ui.label(
@@ -142,38 +150,16 @@ pub fn render_overlay(
                         );
                         ui.add_space(2.0);
 
-                        let (allies, enemies) = split_players_by_team(visible_players, local_puuid);
-
-                        if !allies.is_empty() {
-                            team_label(ui, "YOUR TEAM", allies[0].team_id.as_str());
-                            player_rows(
-                                ui,
-                                &allies,
-                                config,
-                                layout.widths,
-                                local_party_id,
-                                local_party_number,
-                                true,
-                                layout.show_leaderboard,
-                                layout.show_skin,
-                            );
-                        }
-
-                        if !enemies.is_empty() {
-                            ui.add_space(6.0);
-                            team_label(ui, "ENEMY TEAM", enemies[0].team_id.as_str());
-                            player_rows(
-                                ui,
-                                &enemies,
-                                config,
-                                layout.widths,
-                                local_party_id,
-                                local_party_number,
-                                false,
-                                layout.show_leaderboard,
-                                layout.show_skin,
-                            );
-                        }
+                        paint_team_sections(
+                            ui,
+                            &team_layout.sections,
+                            config,
+                            layout.widths,
+                            local_party_id,
+                            local_party_number,
+                            layout.show_leaderboard,
+                            layout.show_skin,
+                        );
 
                         if config.features.last_played {
                             last_played_section(ui, visible_players, local_puuid);
@@ -194,6 +180,15 @@ fn version_footer(ui: &mut Ui) {
                 .color(theme::TEXT_MUTED),
         );
     });
+}
+
+fn paint_team_grouping_notice(ui: &mut Ui, notice: &str) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(notice)
+            .font(theme::small_regular_font())
+            .color(theme::TEXT_MUTED),
+    );
 }
 
 fn paint_panel_label(ui: &mut Ui, label: &str) {
@@ -226,15 +221,36 @@ fn visible_players<'a>(
     }
 }
 
-fn split_players_by_team<'a>(
-    players: &'a [PlayerDisplayData],
-    local_puuid: &str,
-) -> (Vec<&'a PlayerDisplayData>, Vec<&'a PlayerDisplayData>) {
-    let my_team = local_team_id(players, local_puuid);
-
-    players
-        .iter()
-        .partition(|player| player.team_id == my_team || my_team.is_empty())
+fn paint_team_sections(
+    ui: &mut Ui,
+    sections: &[TeamSection<'_>],
+    config: &Config,
+    widths: ColumnWidths,
+    local_party_id: &str,
+    local_party_number: i32,
+    show_leaderboard: bool,
+    show_skin: bool,
+) {
+    for (index, section) in sections.iter().enumerate() {
+        if section.players.is_empty() {
+            continue;
+        }
+        if index > 0 {
+            ui.add_space(6.0);
+        }
+        team_label(ui, section.heading.as_str(), section.team_id);
+        player_rows(
+            ui,
+            &section.players,
+            config,
+            widths,
+            local_party_id,
+            local_party_number,
+            section.is_local,
+            show_leaderboard,
+            show_skin,
+        );
+    }
 }
 
 fn leaderboard_column_visible(config: &Config, players: &[PlayerDisplayData]) -> bool {
@@ -253,6 +269,7 @@ fn overlay_layout(
     ctx: &egui::Context,
     game_state: &GameState,
     players: &[PlayerDisplayData],
+    match_context: Option<&MatchContext>,
     columns: &ColumnConfig,
     config: &Config,
     local_puuid: &str,
@@ -273,8 +290,10 @@ fn overlay_layout(
     let frame_width = table_width(columns, widths, show_leaderboard, show_skin);
     let frame_height = compute_frame_height(
         ctx,
+        game_state,
         players,
         local_puuid,
+        match_context,
         config,
         local_party_id,
         local_party_number,
@@ -292,8 +311,10 @@ fn overlay_layout(
 /// Compute the overlay content height so the frame shrinks to fit the rows.
 fn compute_frame_height(
     ctx: &egui::Context,
+    game_state: &GameState,
     visible_players: &[PlayerDisplayData],
     local_puuid: &str,
+    match_context: Option<&MatchContext>,
     config: &Config,
     local_party_id: &str,
     local_party_number: i32,
@@ -311,6 +332,15 @@ fn compute_frame_height(
     let title_alloc_h = theme::header_font().size.max(theme::small_font().size);
     elements.push(header_row_h.max(title_alloc_h));
 
+    let ingame = matches!(game_state, GameState::Ingame { .. });
+    if team_layout(visible_players, local_puuid, match_context, ingame)
+        .notice
+        .is_some()
+    {
+        elements.push(4.0);
+        elements.push(small_reg_row_h);
+    }
+
     if visible_players.is_empty() {
         elements.push(6.0); // add_space(6.0)
         elements.push(body_row_h); // "No active match data"
@@ -319,23 +349,19 @@ fn compute_frame_height(
         elements.push(HDR_H); // header_row
         elements.push(2.0); // add_space after header
 
-        let (allies, enemies) = split_players_by_team(visible_players, local_puuid);
-
-        if !allies.is_empty() {
-            elements.push(2.0); // team_label add_space(2.0)
-            elements.push(small_row_h); // team_label text
-            elements.push(1.0); // team_label add_space(1.0)
-            for _ in &allies {
-                elements.push(ROW_H);
+        let sections =
+            team_layout(visible_players, local_puuid, match_context, ingame).sections;
+        for (index, section) in sections.iter().enumerate() {
+            if section.players.is_empty() {
+                continue;
             }
-        }
-
-        if !enemies.is_empty() {
-            elements.push(6.0); // add_space(6.0) between teams
+            if index > 0 {
+                elements.push(6.0); // add_space between team sections
+            }
             elements.push(2.0); // team_label add_space(2.0)
             elements.push(small_row_h); // team_label text
             elements.push(1.0); // team_label add_space(1.0)
-            for _ in &enemies {
+            for _ in &section.players {
                 elements.push(ROW_H);
             }
         }
@@ -1678,12 +1704,21 @@ fn player_display_name(
     local_party_id: &str,
     local_party_number: i32,
 ) -> String {
-    let name =
-        if player.is_incognito && !shares_local_party(player, local_party_id, local_party_number) {
-            "---".to_string()
+    let name = if player.is_incognito && !shares_local_party(player, local_party_id, local_party_number)
+    {
+        let mut anonymous = if !player.incognito_display_name.is_empty() {
+            player.incognito_display_name.clone()
         } else {
-            format!("{}#{}", player.game_name, player.tag_line)
+            "---".to_string()
         };
+        if let Some(marker) = player.incognito_team_marker {
+            anonymous.push(' ');
+            anonymous.push(marker);
+        }
+        anonymous
+    } else {
+        format!("{}#{}", player.game_name, player.tag_line)
+    };
 
     if config.features.truncate_names {
         ellipsize(&name, 18)
@@ -2223,10 +2258,11 @@ mod tests {
         earned_rr_column_value, format_last_seen_summary, format_rank_parts, format_server_id,
         format_skin_name, leaderboard_column_visible, local_party_marker, party_grouped_players,
         party_indicator_number, party_row_groups, player_display_name, rr_column_visible,
-        shares_local_party, skin_column_visible, split_players_by_team, winrate_column_value,
+        shares_local_party, skin_column_visible, winrate_column_value,
     };
     use crate::config::{ColumnConfig, Config};
     use crate::game::state::GameState;
+    use crate::game::teams::team_sections;
     use crate::riot::types::PlayerDisplayData;
 
     fn player(puuid: &str, team_id: &str) -> PlayerDisplayData {
@@ -2246,7 +2282,17 @@ mod tests {
             player("enemy-2", "Red"),
         ];
 
-        let (allies, enemies) = split_players_by_team(&players, "self");
+        let sections = team_sections(&players, "self", None);
+        let allies = sections
+            .iter()
+            .find(|section| section.is_local)
+            .map(|section| section.players.as_slice())
+            .unwrap_or(&[]);
+        let enemies = sections
+            .iter()
+            .filter(|section| !section.is_local)
+            .flat_map(|section| section.players.iter())
+            .collect::<Vec<_>>();
 
         assert_eq!(allies.len(), 2);
         assert!(allies.iter().all(|player| player.team_id == "Blue"));
@@ -2377,6 +2423,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(player_display_name(&private_player, &config, "", 0), "---");
+
+        let anonymous_player = PlayerDisplayData {
+            is_incognito: true,
+            incognito_display_name: "Purple Corgi".into(),
+            incognito_team_marker: Some('X'),
+            ..Default::default()
+        };
+        assert_eq!(
+            player_display_name(&anonymous_player, &config, "", 0),
+            "Purple Corgi X"
+        );
 
         let long_name_player = PlayerDisplayData {
             game_name: "VeryLongPlayerName".into(),

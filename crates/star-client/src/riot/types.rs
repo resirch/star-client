@@ -246,7 +246,10 @@ pub struct PregameMatchResponse {
     pub provisioning_flow_i_d: Option<String>,
     #[serde(rename = "GamePodID")]
     pub game_pod_id: Option<String>,
+    #[serde(default)]
+    pub teams: Vec<PregameTeam>,
     pub ally_team: Option<PregameTeam>,
+    pub enemy_team: Option<PregameTeam>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -500,8 +503,14 @@ pub struct PlayerDisplayData {
     #[serde(skip)]
     pub skin_color: egui::Color32,
     pub party_id: String,
+    /// Match-provided party ID used for roster grouping (not mutated by presence/history).
+    pub match_party_id: String,
+    /// Stable duo/team key from pregame (UUID); kept when coregame reports Blue/Red.
+    pub roster_team_id: String,
     pub party_number: i32,
     pub is_incognito: bool,
+    pub incognito_display_name: String,
+    pub incognito_team_marker: Option<char>,
     pub is_star_user: bool,
     pub times_seen_before: i32,
     pub last_seen_at: String,

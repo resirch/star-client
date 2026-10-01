@@ -264,8 +264,26 @@ pub fn team_id_color(team_id: &str) -> Color32 {
     } else if team_id.eq_ignore_ascii_case("blue") {
         TEAM_BLUE
     } else {
-        TEXT_PRIMARY
+        hashed_team_color(team_id)
     }
+}
+
+fn hashed_team_color(team_id: &str) -> Color32 {
+    let mut hash = 0u32;
+    for byte in team_id.as_bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(*byte as u32);
+    }
+    let palette = [
+        Color32::from_rgb(238, 77, 77),
+        Color32::from_rgb(76, 151, 237),
+        Color32::from_rgb(221, 224, 41),
+        Color32::from_rgb(176, 122, 255),
+        Color32::from_rgb(102, 212, 212),
+        Color32::from_rgb(241, 144, 54),
+        Color32::from_rgb(207, 207, 76),
+        Color32::from_rgb(71, 204, 120),
+    ];
+    palette[(hash as usize) % palette.len()]
 }
 
 pub fn winrate_color(pct: f64) -> Color32 {
