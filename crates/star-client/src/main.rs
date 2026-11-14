@@ -3,6 +3,7 @@ mod assets;
 mod config;
 mod discord;
 mod game;
+mod log_dedup;
 mod overlay;
 mod riot;
 mod settings;
@@ -28,7 +29,10 @@ const SETTINGS_SCROLL_MULTIPLIER: f32 = 64.0;
 const DETACHED_LAUNCH_ENV: &str = "STAR_CLIENT_DETACHED";
 
 fn main() {
+    let log_writer = log_dedup::init();
     tracing_subscriber::fmt()
+        .with_writer(log_writer)
+        .with_ansi(log_dedup::is_live())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "star_client=info,warn".into()),
@@ -86,6 +90,7 @@ fn main() {
     });
 
     run_overlay(app_state, quit_flag, key_held, tray, settings_requested);
+    log_dedup::finish();
 }
 
 #[cfg(target_os = "windows")]
@@ -171,6 +176,9 @@ async fn run_background_loop(
         tracing::warn!("Auto update check failed: {}", error);
     }
 
+    // Only log the lockfile port when it changes, so auth retries collapse into one line.
+    let mut logged_port: Option<u16> = None;
+
     loop {
         if quit_flag.load(Ordering::Relaxed) {
             return;
@@ -179,6 +187,11 @@ async fn run_background_loop(
         let lockfile_data = tokio::task::spawn_blocking(lockfile::wait_for_lockfile)
             .await
             .expect("lockfile task");
+
+        if logged_port != Some(lockfile_data.port) {
+            tracing::info!("Lockfile found on port {}", lockfile_data.port);
+            logged_port = Some(lockfile_data.port);
+        }
 
         if quit_flag.load(Ordering::Relaxed) {
             return;
@@ -193,6 +206,7 @@ async fn run_background_loop(
             }
         };
 
+        logged_port = None;
         tracing::info!(
             "Authenticated as {} (region: {}, shard: {})",
             &riot_auth.puuid[..8],

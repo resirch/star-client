@@ -16,12 +16,30 @@ pub async fn authenticate(lockfile: &LockfileData) -> Result<RiotAuth> {
 
     let url = format!("https://127.0.0.1:{}/entitlements/v1/token", lockfile.port);
 
-    let resp: EntitlementsResponse = client
+    let http_resp = client
         .get(&url)
         .header("Authorization", format!("Basic {}", basic_auth))
         .send()
         .await
-        .context("Failed to connect to Riot Client")?
+        .context("Failed to connect to Riot Client")?;
+
+    let status = http_resp.status();
+    if !status.is_success() {
+        // The Riot Client returns 404 "Invalid URI format" for every endpoint until a
+        // user has signed in and its plugins are loaded.
+        let body = http_resp.text().await.unwrap_or_default();
+        let message = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message")?.as_str().map(str::to_owned))
+            .unwrap_or(body);
+        anyhow::bail!(
+            "Entitlements not available ({}: {}). Is the Riot Client signed in?",
+            status,
+            message
+        );
+    }
+
+    let resp: EntitlementsResponse = http_resp
         .json()
         .await
         .context("Failed to parse entitlements")?;
