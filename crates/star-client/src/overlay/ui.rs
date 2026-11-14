@@ -1,7 +1,7 @@
 use crate::assets;
 use crate::config::{ColumnConfig, Config};
 use crate::game::match_data::MatchContext;
-use crate::game::teams::{team_layout, TeamSection};
+use crate::game::teams::{self, team_layout, TeamSection};
 use crate::game::state::GameState;
 use crate::overlay::theme;
 use crate::riot::types::{rank_color, PlayerDisplayData};
@@ -238,7 +238,7 @@ fn paint_team_sections(
         if index > 0 {
             ui.add_space(6.0);
         }
-        team_label(ui, section.heading.as_str(), section.team_id);
+        team_label(ui, section.heading.as_str(), section.side);
         player_rows(
             ui,
             &section.players,
@@ -933,12 +933,12 @@ fn paint_cell_divider(ui: &mut Ui, rect: Rect) {
     );
 }
 
-fn team_label(ui: &mut Ui, text: &str, team_id: &str) {
+fn team_label(ui: &mut Ui, text: &str, side: &str) {
     ui.add_space(2.0);
     ui.label(
         RichText::new(format!("> {text}"))
             .font(theme::small_font())
-            .color(team_color(team_id, text.eq_ignore_ascii_case("YOUR TEAM"))),
+            .color(theme::side_color(side)),
     );
     ui.add_space(1.0);
 }
@@ -1021,7 +1021,6 @@ fn player_row(
             rect,
             p,
             config,
-            is_ally,
             local_party_id,
             local_party_number,
             &f,
@@ -1040,7 +1039,6 @@ fn paint_player_column(
     rect: Rect,
     p: &PlayerDisplayData,
     config: &Config,
-    is_ally: bool,
     local_party_id: &str,
     local_party_number: i32,
     font: &egui::FontId,
@@ -1073,7 +1071,7 @@ fn paint_player_column(
                 &display_name,
                 rect,
                 font,
-                team_color(&p.team_id, is_ally),
+                theme::side_color(teams::player_side(p)),
                 column_index,
                 column_count,
             );
@@ -2168,14 +2166,6 @@ fn team_relation_label(player: &PlayerDisplayData, my_team: &str) -> &'static st
         "your team"
     } else {
         "enemy team"
-    }
-}
-
-fn team_color(team_id: &str, is_ally: bool) -> egui::Color32 {
-    if team_id.is_empty() {
-        theme::team_text_color(is_ally)
-    } else {
-        theme::team_id_color(team_id)
     }
 }
 

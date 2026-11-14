@@ -250,40 +250,15 @@ pub fn cell_divider_stroke() -> Stroke {
     Stroke::new(1.0, BORDER_COLOR.gamma_multiply(0.85))
 }
 
-pub fn team_text_color(is_ally: bool) -> Color32 {
-    if is_ally {
+/// Red for the attacking side, blue for the defending side, neutral when unknown.
+pub fn side_color(side: &str) -> Color32 {
+    if side.eq_ignore_ascii_case("red") {
+        TEAM_RED
+    } else if side.eq_ignore_ascii_case("blue") {
         TEAM_BLUE
     } else {
-        TEAM_RED
+        TEXT_SECONDARY
     }
-}
-
-pub fn team_id_color(team_id: &str) -> Color32 {
-    if team_id.eq_ignore_ascii_case("red") {
-        TEAM_RED
-    } else if team_id.eq_ignore_ascii_case("blue") {
-        TEAM_BLUE
-    } else {
-        hashed_team_color(team_id)
-    }
-}
-
-fn hashed_team_color(team_id: &str) -> Color32 {
-    let mut hash = 0u32;
-    for byte in team_id.as_bytes() {
-        hash = hash.wrapping_mul(31).wrapping_add(*byte as u32);
-    }
-    let palette = [
-        Color32::from_rgb(238, 77, 77),
-        Color32::from_rgb(76, 151, 237),
-        Color32::from_rgb(221, 224, 41),
-        Color32::from_rgb(176, 122, 255),
-        Color32::from_rgb(102, 212, 212),
-        Color32::from_rgb(241, 144, 54),
-        Color32::from_rgb(207, 207, 76),
-        Color32::from_rgb(71, 204, 120),
-    ];
-    palette[(hash as usize) % palette.len()]
 }
 
 pub fn winrate_color(pct: f64) -> Color32 {

@@ -3,9 +3,23 @@ use crate::riot::types::PlayerDisplayData;
 use std::collections::HashMap;
 
 pub const MIN_DUO_PARTY_GROUPS_FOR_MULTI_TEAM: usize = 4;
+/// Player count of a standard 5v5 lobby; larger lobbies are multi-team modes.
+pub const STANDARD_LOBBY_SIZE: usize = 10;
 
 pub fn is_standard_team_id(team_id: &str) -> bool {
     team_id.eq_ignore_ascii_case("blue") || team_id.eq_ignore_ascii_case("red")
+}
+
+/// Riot side for color purposes: "Red" (attacking) or "Blue" (defending), or
+/// empty when unknown. Side swaps rewrite `team_id`, so it reflects the current half.
+pub fn player_side(player: &PlayerDisplayData) -> &str {
+    if is_standard_team_id(&player.team_id) {
+        &player.team_id
+    } else if is_standard_team_id(&player.side_team_id) {
+        &player.side_team_id
+    } else {
+        ""
+    }
 }
 
 pub fn is_gauntlet_context(ctx: &MatchContext) -> bool {
@@ -76,7 +90,14 @@ pub fn is_large_standard_team_lobby(players: &[PlayerDisplayData]) -> bool {
         .max()
         .unwrap_or(0);
 
-    largest_faction > 4
+    largest_faction > 5
+}
+
+fn suppress_standard_team_grouping(
+    players: &[PlayerDisplayData],
+    ctx: Option<&MatchContext>,
+) -> bool {
+    ctx.is_some_and(is_gauntlet_context) && is_large_standard_team_lobby(players)
 }
 
 pub fn should_group_by_roster_team(players: &[PlayerDisplayData], ctx: Option<&MatchContext>) -> bool {
@@ -85,9 +106,6 @@ pub fn should_group_by_roster_team(players: &[PlayerDisplayData], ctx: Option<&M
         return true;
     }
     if ctx.is_some_and(is_gauntlet_context) && duo_teams >= 1 {
-        return true;
-    }
-    if is_large_standard_team_lobby(players) && duo_teams >= 1 {
         return true;
     }
     false
@@ -116,12 +134,8 @@ fn unique_team_ids(players: &[PlayerDisplayData]) -> Vec<String> {
 }
 
 pub fn uses_multi_team_layout(players: &[PlayerDisplayData], ctx: Option<&MatchContext>) -> bool {
-    if ctx.is_some_and(is_gauntlet_context) {
-        return true;
-    }
-
-    if is_large_standard_team_lobby(players) {
-        return true;
+    if !ctx.is_some_and(is_gauntlet_context) {
+        return false;
     }
 
     if should_group_by_roster_team(players, ctx) {
@@ -132,20 +146,14 @@ pub fn uses_multi_team_layout(players: &[PlayerDisplayData], ctx: Option<&MatchC
         return true;
     }
 
-    let teams = unique_team_ids(players);
-    if teams.len() > 2 {
-        return true;
-    }
-
-    teams
-        .iter()
-        .any(|team_id| !team_id.is_empty() && !is_standard_team_id(team_id))
+    is_large_standard_team_lobby(players)
 }
 
 fn explicit_duo_group_key(
     player: &PlayerDisplayData,
     players: &[PlayerDisplayData],
     group_by_party: bool,
+    ctx: Option<&MatchContext>,
 ) -> Option<String> {
     if !player.roster_team_id.is_empty() {
         let count = players
@@ -182,7 +190,7 @@ fn explicit_duo_group_key(
 
     if !player.team_id.is_empty()
         && !is_standard_team_id(&player.team_id)
-        && !is_large_standard_team_lobby(players)
+        && !suppress_standard_team_grouping(players, ctx)
     {
         let count = players
             .iter()
@@ -193,7 +201,7 @@ fn explicit_duo_group_key(
         }
     }
 
-    if !player.team_id.is_empty() && !is_large_standard_team_lobby(players) {
+    if !player.team_id.is_empty() && !suppress_standard_team_grouping(players, ctx) {
         let team_count = unique_team_ids(players).len();
         if team_count <= 2 {
             return Some(format!("team:{}", player.team_id));
@@ -206,11 +214,12 @@ fn explicit_duo_group_key(
 pub fn build_team_group_keys(
     players: &[PlayerDisplayData],
     group_by_party: bool,
+    ctx: Option<&MatchContext>,
 ) -> HashMap<String, String> {
     let mut keys: HashMap<String, String> = HashMap::new();
     for player in players {
         keys.entry(player.puuid.clone()).or_insert_with(|| {
-            explicit_duo_group_key(player, players, group_by_party)
+            explicit_duo_group_key(player, players, group_by_party, ctx)
                 .unwrap_or_else(|| format!("solo:{}", player.puuid))
         });
     }
@@ -222,8 +231,9 @@ pub fn team_group_key(
     player: &PlayerDisplayData,
     players: &[PlayerDisplayData],
     group_by_party: bool,
+    ctx: Option<&MatchContext>,
 ) -> String {
-    build_team_group_keys(players, group_by_party)
+    build_team_group_keys(players, group_by_party, ctx)
         .get(&player.puuid)
         .cloned()
         .unwrap_or_else(|| format!("solo:{}", player.puuid))
@@ -237,7 +247,8 @@ pub fn roster_uses_multi_team_layout(
 }
 
 pub struct TeamSection<'a> {
-    pub team_id: &'a str,
+    /// Side shared by every player in the section ("Red"/"Blue"), or empty.
+    pub side: &'a str,
     pub heading: String,
     pub is_local: bool,
     pub players: Vec<&'a PlayerDisplayData>,
@@ -255,7 +266,7 @@ pub fn has_reliable_duo_grouping(
     players: &[PlayerDisplayData],
     ctx: Option<&MatchContext>,
 ) -> bool {
-    if !uses_multi_team_layout(players, ctx) {
+    if !ctx.is_some_and(is_gauntlet_context) {
         return true;
     }
 
@@ -269,20 +280,20 @@ pub fn team_layout<'a>(
     ctx: Option<&MatchContext>,
     ingame: bool,
 ) -> TeamLayout<'a> {
-    if uses_multi_team_layout(players, ctx) && !has_reliable_duo_grouping(players, ctx) {
+    if ctx.is_some_and(is_gauntlet_context)
+        && ingame
+        && uses_multi_team_layout(players, ctx)
+        && !has_reliable_duo_grouping(players, ctx)
+    {
         return TeamLayout {
             sections: free_for_all_sections(players),
-            notice: if ingame {
-                Some(TEAM_GROUPING_UNAVAILABLE_MESSAGE)
-            } else {
-                None
-            },
+            notice: Some(TEAM_GROUPING_UNAVAILABLE_MESSAGE),
         };
     }
 
     let sections = if uses_multi_team_layout(players, ctx) {
         let group_by_party = should_group_by_party(players, ctx);
-        multi_team_sections(players, local_puuid, group_by_party)
+        multi_team_sections(players, local_puuid, group_by_party, ctx)
     } else {
         classic_team_sections(players, local_puuid)
     };
@@ -301,13 +312,25 @@ pub fn team_sections<'a>(
     team_layout(players, local_puuid, ctx, false).sections
 }
 
+fn shared_side<'a>(mut players: impl Iterator<Item = &'a PlayerDisplayData>) -> &'a str {
+    let Some(first) = players.next() else {
+        return "";
+    };
+    let side = player_side(first);
+    if players.all(|player| player_side(player).eq_ignore_ascii_case(side)) {
+        side
+    } else {
+        ""
+    }
+}
+
 fn free_for_all_sections<'a>(players: &'a [PlayerDisplayData]) -> Vec<TeamSection<'a>> {
     if players.is_empty() {
         return Vec::new();
     }
 
     vec![TeamSection {
-        team_id: players[0].team_id.as_str(),
+        side: shared_side(players.iter()),
         heading: "PLAYERS".to_string(),
         is_local: true,
         players: players.iter().collect(),
@@ -330,7 +353,7 @@ fn classic_team_sections<'a>(
     let mut sections = Vec::new();
     if !allies.is_empty() {
         sections.push(TeamSection {
-            team_id: allies[0].team_id.as_str(),
+            side: shared_side(allies.iter().copied()),
             heading: "YOUR TEAM".to_string(),
             is_local: true,
             players: allies,
@@ -338,7 +361,7 @@ fn classic_team_sections<'a>(
     }
     if !enemies.is_empty() {
         sections.push(TeamSection {
-            team_id: enemies[0].team_id.as_str(),
+            side: shared_side(enemies.iter().copied()),
             heading: "ENEMY TEAM".to_string(),
             is_local: false,
             players: enemies,
@@ -351,8 +374,9 @@ fn multi_team_sections<'a>(
     players: &'a [PlayerDisplayData],
     local_puuid: &str,
     group_by_party: bool,
+    ctx: Option<&MatchContext>,
 ) -> Vec<TeamSection<'a>> {
-    let group_keys = build_team_group_keys(players, group_by_party);
+    let group_keys = build_team_group_keys(players, group_by_party, ctx);
     let my_key = players
         .iter()
         .find(|player| player.puuid == local_puuid)
@@ -392,9 +416,8 @@ fn multi_team_sections<'a>(
                 format!("OPPONENT {opponent_index}")
             };
 
-            let team_id = team_players[0].team_id.as_str();
             Some(TeamSection {
-                team_id,
+                side: shared_side(team_players.iter().copied()),
                 heading,
                 is_local,
                 players: team_players,
@@ -404,11 +427,14 @@ fn multi_team_sections<'a>(
 }
 
 /// Assigns stable O/X markers for anonymous duos (e.g. Gauntlet teams of two).
-pub fn apply_incognito_team_markers(players: &mut [PlayerDisplayData]) {
-    let group_by_party = should_group_by_party(players, None);
+pub fn apply_incognito_team_markers(
+    players: &mut [PlayerDisplayData],
+    ctx: Option<&MatchContext>,
+) {
+    let group_by_party = should_group_by_party(players, ctx);
     let mut by_group: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, player) in players.iter().enumerate() {
-        let key = team_group_key(player, players, group_by_party);
+        let key = team_group_key(player, players, group_by_party, ctx);
         if key.is_empty() {
             continue;
         }
@@ -487,8 +513,10 @@ mod tests {
             });
         }
 
+        let ctx = gauntlet_context();
         assert!(is_large_standard_team_lobby(&players));
-        assert!(uses_multi_team_layout(&players, None));
+        assert!(uses_multi_team_layout(&players, Some(&ctx)));
+        assert!(!uses_multi_team_layout(&players, None));
     }
 
     #[test]
@@ -512,7 +540,8 @@ mod tests {
             duo_roster("o7b", "Blue", "roster-8"),
         ];
 
-        let sections = team_sections(&players, "self", None);
+        let ctx = gauntlet_context();
+        let sections = team_sections(&players, "self", Some(&ctx));
         assert_eq!(sections.len(), 8);
         assert_eq!(sections[0].heading, "YOUR TEAM");
         assert_eq!(sections[0].players.len(), 2);
@@ -527,7 +556,8 @@ mod tests {
             duo_roster("o1b", "Blue", "team-2"),
         ];
 
-        let keys = build_team_group_keys(&players, false);
+        let ctx = gauntlet_context();
+        let keys = build_team_group_keys(&players, false, Some(&ctx));
         assert_eq!(keys.get("self"), keys.get("mate"));
         assert_eq!(keys.get("o1a"), keys.get("o1b"));
         assert_ne!(keys.get("self"), keys.get("o1a"));
@@ -544,7 +574,8 @@ mod tests {
             });
         }
 
-        let layout = team_layout(&players, "p00", None, true);
+        let ctx = gauntlet_context();
+        let layout = team_layout(&players, "p00", Some(&ctx), true);
         assert_eq!(layout.sections.len(), 1);
         assert_eq!(layout.sections[0].heading, "PLAYERS");
         assert_eq!(layout.sections[0].players.len(), 16);
@@ -571,7 +602,8 @@ mod tests {
             });
         }
 
-        let keys = build_team_group_keys(&players, false);
+        let ctx = gauntlet_context();
+        let keys = build_team_group_keys(&players, false, Some(&ctx));
         let unique_keys: std::collections::HashSet<_> = keys.values().cloned().collect();
         assert_eq!(unique_keys.len(), 14);
         assert!(!keys.values().any(|key| key.starts_with("pair:")));
@@ -586,5 +618,54 @@ mod tests {
         ];
 
         assert!(!uses_multi_team_layout(&players, None));
+    }
+
+    #[test]
+    fn swiftplay_uses_classic_team_layout() {
+        let ctx = MatchContext {
+            map: MapInfo {
+                name: "Ascent".into(),
+            },
+            queue: "swiftplay".into(),
+            mode: "swiftplay".into(),
+            server_id: String::new(),
+        };
+        let mut players = Vec::new();
+        for i in 0..5 {
+            players.push(player(&format!("b{i}"), "Blue"));
+        }
+        for i in 0..5 {
+            players.push(player(&format!("r{i}"), "Red"));
+        }
+
+        let layout = team_layout(&players, "b0", Some(&ctx), true);
+        assert_eq!(layout.sections.len(), 2);
+        assert!(layout.notice.is_none());
+        assert_eq!(layout.sections[0].heading, "YOUR TEAM");
+        assert_eq!(layout.sections[1].heading, "ENEMY TEAM");
+    }
+
+    #[test]
+    fn player_side_prefers_live_team_then_pregame_side() {
+        let ingame = player("a", "Red");
+        assert_eq!(player_side(&ingame), "Red");
+
+        let pregame = PlayerDisplayData {
+            side_team_id: "Blue".into(),
+            ..player("b", "pregame-team:0")
+        };
+        assert_eq!(player_side(&pregame), "Blue");
+
+        assert_eq!(player_side(&player("c", "party")), "");
+    }
+
+    #[test]
+    fn section_side_follows_players_and_is_empty_when_mixed() {
+        let players = vec![player("self", "Blue"), player("enemy", "Red")];
+        let sections = team_sections(&players, "self", None);
+        assert_eq!(sections[0].side, "Blue");
+        assert_eq!(sections[1].side, "Red");
+
+        assert_eq!(shared_side(players.iter()), "");
     }
 }

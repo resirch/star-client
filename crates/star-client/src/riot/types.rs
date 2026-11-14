@@ -507,6 +507,9 @@ pub struct PlayerDisplayData {
     pub match_party_id: String,
     /// Stable duo/team key from pregame (UUID); kept when coregame reports Blue/Red.
     pub roster_team_id: String,
+    /// Riot side ("Red" attacks first, "Blue" defends first) when `team_id`
+    /// holds a roster key instead of the side, as in pregame.
+    pub side_team_id: String,
     pub party_number: i32,
     pub is_incognito: bool,
     pub incognito_display_name: String,
