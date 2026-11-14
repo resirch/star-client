@@ -7,7 +7,7 @@ use crate::game::party;
 use crate::game::players;
 use crate::game::state::{self, GameState};
 use crate::riot::api::RiotApiClient;
-use crate::riot::types::PlayerDisplayData;
+use crate::riot::types::{PlayerDisplayData, PrivatePresence};
 use crate::star::client::StarClient;
 use crate::star::presence;
 use anyhow::Result;
@@ -28,6 +28,18 @@ pub struct AppState {
     /// PUUID -> pregame team id (duo grouping), cached for the current match.
     pub roster_team_by_puuid: HashMap<String, String>,
     pub local_puuid: String,
+    /// Rounds completed in `last_match_id`, from presence; drives side colors.
+    pub rounds_played: Option<u32>,
+}
+
+impl AppState {
+    /// Whether Red/Blue currently play the opposite sides from where they started.
+    pub fn sides_swapped(&self) -> bool {
+        matches!(self.game_state, GameState::Ingame { .. })
+            && self
+                .rounds_played
+                .is_some_and(|rounds| teams::sides_swapped(rounds, self.match_context.as_ref()))
+    }
 }
 
 const WAITING_FOR_CLIENT_DEBOUNCE_POLLS: u8 = 3;
@@ -49,6 +61,7 @@ impl AppState {
             pregame_match_id: String::new(),
             roster_team_by_puuid: HashMap::new(),
             local_puuid: String::new(),
+            rounds_played: None,
         }
     }
 }
@@ -198,6 +211,7 @@ pub async fn run_data_loop(
                 }
                 GameState::Menu | GameState::WaitingForClient => {
                     state.auto_visible = false;
+                    state.rounds_played = None;
                     state.players.clear();
                     state.match_context = None;
                     state.last_match_id.clear();
@@ -215,6 +229,10 @@ pub async fn run_data_loop(
             let state = app_state.read().await;
             !match_id.is_empty() && match_id != state.last_match_id
         };
+
+        if matches!(new_state, GameState::Ingame { .. }) {
+            update_rounds_played(&app_state, &api_guard, &match_id, is_new_match).await;
+        }
 
         if is_new_match {
             if let (
@@ -1003,53 +1021,14 @@ fn merge_match_players(existing: &mut Vec<PlayerDisplayData>, refreshed: Vec<Pla
     existing.extend(missing_players);
 }
 
+/// Merges a refreshed roster after an in-game match ID change. Team IDs stay
+/// as Riot reports them; side colors come from the round count instead
+/// (see `AppState::sides_swapped`).
 fn merge_or_swap_side_change(
     existing: &mut Vec<PlayerDisplayData>,
     refreshed: Vec<PlayerDisplayData>,
 ) {
-    let match_context = None;
-    if teams::roster_uses_multi_team_layout(existing, match_context)
-        || teams::roster_uses_multi_team_layout(&refreshed, match_context)
-    {
-        merge_match_players(existing, refreshed);
-        return;
-    }
-
-    if refreshed.is_empty() {
-        swap_team_colors(existing);
-        return;
-    }
-
-    let refreshed_puuids: HashMap<String, ()> = refreshed
-        .iter()
-        .filter(|player| !player.puuid.is_empty())
-        .map(|player| (player.puuid.clone(), ()))
-        .collect();
-    let refreshed_has_team_changes = has_team_assignment_changes(existing, &refreshed);
     merge_match_players(existing, refreshed);
-    if refreshed_has_team_changes {
-        for player in existing.iter_mut() {
-            if !refreshed_puuids.contains_key(&player.puuid) {
-                swap_team_color(player);
-            }
-        }
-    } else {
-        swap_team_colors(existing);
-    }
-}
-
-fn swap_team_colors(players: &mut [PlayerDisplayData]) {
-    for player in players {
-        swap_team_color(player);
-    }
-}
-
-fn swap_team_color(player: &mut PlayerDisplayData) {
-    if player.team_id.eq_ignore_ascii_case("red") {
-        player.team_id = "Blue".to_string();
-    } else if player.team_id.eq_ignore_ascii_case("blue") {
-        player.team_id = "Red".to_string();
-    }
 }
 
 fn same_player_roster(existing: &[PlayerDisplayData], refreshed: &[PlayerDisplayData]) -> bool {
@@ -1085,23 +1064,6 @@ fn player_roster_is_subset(
 
     refreshed.iter().all(|player| {
         !player.puuid.is_empty() && existing_by_puuid.contains_key(player.puuid.as_str())
-    })
-}
-
-fn has_team_assignment_changes(
-    existing: &[PlayerDisplayData],
-    refreshed: &[PlayerDisplayData],
-) -> bool {
-    let existing_by_puuid: HashMap<&str, &str> = existing
-        .iter()
-        .map(|player| (player.puuid.as_str(), player.team_id.as_str()))
-        .collect();
-
-    refreshed.iter().any(|player| {
-        !player.team_id.is_empty()
-            && existing_by_puuid
-                .get(player.puuid.as_str())
-                .is_some_and(|team_id| !player.team_id.eq_ignore_ascii_case(team_id))
     })
 }
 
@@ -1318,6 +1280,55 @@ fn should_debounce_detected_state(previous_state: &GameState, detected_state: &G
         || (detected_state == &GameState::Menu && previous_state.is_in_match())
 }
 
+/// Refreshes the completed-round count from the local presence scoreline so
+/// side colors follow halftime and overtime swaps.
+async fn update_rounds_played(
+    app_state: &Arc<RwLock<AppState>>,
+    api: &RiotApiClient,
+    match_id: &str,
+    is_new_match: bool,
+) {
+    let rounds = match api.get_self_presence().await {
+        Ok(Some(presence)) => presence_rounds_for_match(&presence, match_id),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::debug!("Could not read presence for round count: {}", error);
+            None
+        }
+    };
+
+    let mut state = app_state.write().await;
+    if is_new_match {
+        state.rounds_played = None;
+    }
+    if rounds.is_some() && rounds != state.rounds_played {
+        let previous_swapped = state.sides_swapped();
+        state.rounds_played = rounds;
+        let swapped = state.sides_swapped();
+        if swapped != previous_swapped {
+            tracing::info!(
+                "Teams switched sides after {} rounds; attackers are now {}",
+                rounds.unwrap_or_default(),
+                if swapped { "Blue" } else { "Red" }
+            );
+        }
+    }
+}
+
+/// Completed rounds from a presence, ignoring presences that describe a
+/// different match or a non-ingame state.
+fn presence_rounds_for_match(presence: &PrivatePresence, match_id: &str) -> Option<u32> {
+    let loop_state = presence.session_loop_state.trim();
+    if !loop_state.is_empty() && !loop_state.eq_ignore_ascii_case("ingame") {
+        return None;
+    }
+    let presence_match_id = presence.match_id.trim();
+    if !presence_match_id.is_empty() && !presence_match_id.eq_ignore_ascii_case(match_id) {
+        return None;
+    }
+    presence.rounds_played()
+}
+
 fn is_ingame_match_id_change(previous_state: &GameState, new_state: &GameState) -> bool {
     matches!(
         (previous_state, new_state),
@@ -1489,12 +1500,12 @@ mod tests {
         carry_over_party, hydrate_player_history, is_ingame_match_id_change, merge_live_players,
         merge_match_players, merge_or_swap_side_change, player_roster_is_subset,
         same_player_roster, should_fetch_initial_player_snapshot, should_fetch_menu_party,
-        should_refresh_encounter_identity, stabilize_game_state, swap_team_colors,
+        presence_rounds_for_match, should_refresh_encounter_identity, stabilize_game_state,
         sync_current_match_history, WAITING_FOR_CLIENT_DEBOUNCE_POLLS,
     };
     use crate::game::history::{EncounterRecord, PlayerHistory};
     use crate::game::state::GameState;
-    use crate::riot::types::PlayerDisplayData;
+    use crate::riot::types::{PlayerDisplayData, PrivatePresence};
     use std::collections::HashMap;
 
     #[test]
@@ -1629,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_side_swap_updates_missing_player_team_color() {
+    fn partial_side_swap_keeps_missing_players_without_recoloring() {
         let mut existing = vec![
             PlayerDisplayData {
                 puuid: "local-player".into(),
@@ -1652,7 +1663,8 @@ mod tests {
 
         assert_eq!(existing.len(), 2);
         assert_eq!(existing[0].team_id, "Red");
-        assert_eq!(existing[1].team_id, "Blue");
+        assert_eq!(existing[1].puuid, "teammate");
+        assert_eq!(existing[1].team_id, "Red");
     }
 
     #[test]
@@ -2209,7 +2221,7 @@ mod tests {
     }
 
     #[test]
-    fn side_swap_flips_colors_when_refreshed_players_are_empty() {
+    fn side_swap_keeps_team_ids_when_refreshed_players_are_empty() {
         let mut existing = vec![
             PlayerDisplayData {
                 puuid: "player-1".into(),
@@ -2227,14 +2239,14 @@ mod tests {
 
         merge_or_swap_side_change(&mut existing, Vec::new());
 
-        assert_eq!(existing[0].team_id, "Red");
-        assert_eq!(existing[1].team_id, "Blue");
+        assert_eq!(existing[0].team_id, "Blue");
+        assert_eq!(existing[1].team_id, "Red");
         assert!(existing[0].enriched);
         assert!(existing[1].enriched);
     }
 
     #[test]
-    fn side_swap_flips_colors_when_refreshed_teams_have_not_changed() {
+    fn side_swap_keeps_team_ids_when_refreshed_teams_have_not_changed() {
         let mut existing = vec![PlayerDisplayData {
             puuid: "player-1".into(),
             team_id: "Blue".into(),
@@ -2250,26 +2262,42 @@ mod tests {
 
         merge_or_swap_side_change(&mut existing, refreshed);
 
-        assert_eq!(existing[0].team_id, "Red");
+        assert_eq!(existing[0].team_id, "Blue");
         assert!(existing[0].enriched);
     }
 
     #[test]
-    fn swap_team_colors_leaves_unknown_team_ids_alone() {
-        let mut players = vec![
-            PlayerDisplayData {
-                team_id: "Blue".into(),
-                ..Default::default()
-            },
-            PlayerDisplayData {
-                team_id: "party".into(),
-                ..Default::default()
-            },
-        ];
+    fn presence_rounds_come_from_the_current_match_scoreline() {
+        let presence: PrivatePresence = serde_json::from_value(serde_json::json!({
+            "sessionLoopState": "INGAME",
+            "partyOwnerMatchScoreAllyTeam": 7,
+            "partyOwnerMatchScoreEnemyTeam": 5,
+        }))
+        .unwrap();
+        assert_eq!(presence_rounds_for_match(&presence, "match-1"), Some(12));
 
-        swap_team_colors(&mut players);
+        let other_match = PrivatePresence {
+            match_id: "match-0".into(),
+            ..presence.clone()
+        };
+        assert_eq!(presence_rounds_for_match(&other_match, "match-1"), None);
 
-        assert_eq!(players[0].team_id, "Red");
-        assert_eq!(players[1].team_id, "party");
+        let menu = PrivatePresence {
+            session_loop_state: "MENUS".into(),
+            ..presence
+        };
+        assert_eq!(presence_rounds_for_match(&menu, "match-1"), None);
+    }
+
+    #[test]
+    fn presence_scores_tolerate_missing_or_odd_values() {
+        let presence: PrivatePresence = serde_json::from_value(serde_json::json!({
+            "sessionLoopState": "INGAME",
+            "partyOwnerMatchScoreAllyTeam": null,
+            "partyOwnerMatchScoreEnemyTeam": "3",
+        }))
+        .unwrap();
+        assert_eq!(presence.party_owner_match_score_enemy_team, Some(3));
+        assert_eq!(presence_rounds_for_match(&presence, "match-1"), None);
     }
 }
