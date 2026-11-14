@@ -36,6 +36,15 @@ pub fn match_history(auth: &RiotAuth, puuid: &str) -> String {
     )
 }
 
+pub fn match_history_depth(auth: &RiotAuth, puuid: &str, depth: usize) -> String {
+    format!(
+        "{}/match-history/v1/history/{}?startIndex=0&endIndex={}",
+        pd_base(auth),
+        puuid,
+        depth
+    )
+}
+
 pub fn name_service(auth: &RiotAuth) -> String {
     format!("{}/name-service/v2/players", pd_base(auth))
 }

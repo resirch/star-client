@@ -1342,15 +1342,8 @@ async fn apply_party_lookups(
     let skip_history_party_finder = players.len() > teams::STANDARD_LOBBY_SIZE
         || teams::duo_party_group_count_for_roster(players) >= teams::MIN_DUO_PARTY_GROUPS_FOR_MULTI_TEAM;
 
-    if party_finder
-        && !skip_history_party_finder
-        && tokio::time::timeout(PARTY_LOOKUP_TIMEOUT, party::detect_parties(api, players))
-            .await
-            .is_err()
-    {
-        tracing::warn!("Party history lookup timed out; showing roster without it");
-    }
-
+    // Presence is authoritative for the local player's party, so apply it
+    // first; the history finder then only has to infer everyone else.
     if tokio::time::timeout(
         PARTY_PRESENCE_TIMEOUT,
         players::mark_party_from_presences(api, players),
@@ -1359,6 +1352,15 @@ async fn apply_party_lookups(
     .is_err()
     {
         tracing::warn!("Party presence lookup timed out; showing roster without it");
+    }
+
+    if party_finder
+        && !skip_history_party_finder
+        && tokio::time::timeout(PARTY_LOOKUP_TIMEOUT, party::detect_parties(api, players))
+            .await
+            .is_err()
+    {
+        tracing::warn!("Party history lookup timed out; showing roster without it");
     }
 }
 
