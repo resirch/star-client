@@ -4,7 +4,9 @@
 use crate::config::DiscordConfig;
 use crate::game::match_data::{mode_display_name, MatchContext};
 use crate::game::state::GameState;
-use crate::riot::types::{rank_name, PlayerDisplayData};
+use crate::riot::types::{
+    presence_number as number, presence_text as text, rank_name, PlayerDisplayData,
+};
 use serde_json::Value;
 
 /// Shown in the lobby, and in a match when the map image is off or unknown.
@@ -67,22 +69,6 @@ impl SelfPresence {
     fn in_custom_lobby(&self) -> bool {
         self.party_state.eq_ignore_ascii_case("CUSTOM_GAME_SETUP")
     }
-}
-
-fn text(root: &Value, nested: &Value, key: &str) -> String {
-    nested[key]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .or_else(|| root[key].as_str())
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn number(root: &Value, nested: &Value, key: &str) -> i64 {
-    nested[key]
-        .as_i64()
-        .or_else(|| root[key].as_i64())
-        .unwrap_or_default()
 }
 
 /// Riot formats this as `2026.11.14-18.02.33` in UTC; the year-1 value means
