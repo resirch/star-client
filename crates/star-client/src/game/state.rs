@@ -556,4 +556,68 @@ mod tests {
             GameState::WaitingForClient
         );
     }
+
+    #[test]
+    fn nested_presence_format_detects_ingame() {
+        // Shape sent by current clients: loop state lives under
+        // matchPresenceData, party fields under partyPresenceData.
+        let json = serde_json::json!({
+            "isValid": true,
+            "matchPresenceData": {
+                "sessionLoopState": "INGAME",
+                "matchMap": "/Game/Maps/Ascent/Ascent",
+                "provisioningFlow": "Matchmaking",
+                "queueId": "competitive"
+            },
+            "partyPresenceData": {
+                "partyId": "party-1",
+                "partySize": 2,
+                "partyVersion": 42
+            },
+            "partyId": "party-1",
+            "partySize": 2,
+            "queueId": "competitive"
+        });
+        let presence = PrivatePresence::from_json(&json);
+
+        assert_eq!(presence.session_loop_state, "INGAME");
+        assert_eq!(presence.matchmap, "/Game/Maps/Ascent/Ascent");
+        assert_eq!(presence.provisioning_flow, "Matchmaking");
+        assert_eq!(presence.party_version, 42);
+        assert_eq!(
+            state_from_presence(&presence, Some("match-1".into()), None),
+            GameState::WaitingForClient,
+            "a pregame match ID must not be used for an ingame presence"
+        );
+        assert_eq!(
+            state_from_presence(&presence, None, Some("match-1".into())),
+            GameState::Ingame {
+                match_id: "match-1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn flat_presence_format_still_parses() {
+        let json = serde_json::json!({
+            "isValid": true,
+            "sessionLoopState": "PREGAME",
+            "matchId": "match-2",
+            "provisioningFlow": "Matchmaking",
+            "queueId": "unrated",
+            "partyId": "party-2",
+            "partySize": 3,
+            "partyVersion": 7
+        });
+        let presence = PrivatePresence::from_json(&json);
+
+        assert_eq!(presence.party_id, "party-2");
+        assert_eq!(presence.party_size, 3);
+        assert_eq!(
+            state_from_presence(&presence, None, None),
+            GameState::Pregame {
+                match_id: "match-2".into()
+            }
+        );
+    }
 }
