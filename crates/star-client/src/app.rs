@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::discord::rpc::DiscordRpc;
+use crate::discord::activity::SelfPresence;
 use crate::game::history::{EncounterRecord, PlayerHistory};
 use crate::game::match_data::{self, MatchContext};
 use crate::game::teams;
@@ -28,6 +28,9 @@ pub struct AppState {
     /// PUUID -> pregame team id (duo grouping), cached for the current match.
     pub roster_team_by_puuid: HashMap<String, String>,
     pub local_puuid: String,
+    /// Local player's Valorant presence, refreshed each poll for Discord RPC.
+    pub self_presence: Option<SelfPresence>,
+    pub self_presence_updated: Option<std::time::Instant>,
 }
 
 const WAITING_FOR_CLIENT_DEBOUNCE_POLLS: u8 = 3;
@@ -35,7 +38,6 @@ const MENU_DECISION_LOG_INTERVAL_POLLS: u16 = 6;
 const DETECTION_AUTH_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 const PARTY_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const PARTY_PRESENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-const DISCORD_RPC_UPDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl AppState {
     pub fn new(config: Config) -> Self {
@@ -49,6 +51,8 @@ impl AppState {
             pregame_match_id: String::new(),
             roster_team_by_puuid: HashMap::new(),
             local_puuid: String::new(),
+            self_presence: None,
+            self_presence_updated: None,
         }
     }
 }
@@ -65,16 +69,6 @@ pub async fn run_data_loop(
         PlayerHistory::open(&data_dir).ok()
     };
 
-    let mut discord = DiscordRpc::new();
-    let mut discord_rpc_enabled = {
-        let state = app_state.read().await;
-        state.config.behavior.discord_rpc
-    };
-    let mut discord_rpc_available = discord_rpc_enabled;
-    if discord_rpc_enabled {
-        discord.connect();
-    }
-
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut waiting_for_client_polls = 0u8;
     let mut menu_detection_polls = 0u16;
@@ -89,7 +83,6 @@ pub async fn run_data_loop(
         *poll_heartbeat.lock() = std::time::Instant::now();
 
         if quit_flag.load(Ordering::Relaxed) {
-            discord.disconnect();
             break;
         }
 
@@ -160,16 +153,22 @@ pub async fn run_data_loop(
             selected_overlay_weapon = next_overlay_weapon.to_string();
         }
 
-        if config.behavior.discord_rpc != discord_rpc_enabled {
-            discord_rpc_enabled = config.behavior.discord_rpc;
-            if discord_rpc_enabled {
-                discord.connect();
-                discord_rpc_available = true;
-            } else {
-                discord.clear();
-                discord.disconnect();
-                discord_rpc_available = false;
+        // Discord RPC runs in its own task; it only needs the presence
+        // snapshot, which is cheap to fetch from the local client.
+        let self_presence = if config.behavior.discord_rpc {
+            match tokio::time::timeout(PARTY_PRESENCE_TIMEOUT, api_guard.get_self_presence_json())
+                .await
+            {
+                Ok(Ok(Some(json))) => Some(SelfPresence::from_json(&json)),
+                _ => None,
             }
+        } else {
+            None
+        };
+        {
+            let mut state = app_state.write().await;
+            state.self_presence_updated = self_presence.is_some().then(std::time::Instant::now);
+            state.self_presence = self_presence;
         }
 
         let state_changed;
@@ -871,45 +870,6 @@ pub async fn run_data_loop(
                             }
                         }
                     }
-                }
-            }
-        }
-
-        if discord_rpc_enabled && discord_rpc_available {
-            let state = app_state.read().await;
-            let rank_name = state
-                .players
-                .first()
-                .map(|p| p.rank_name.clone())
-                .unwrap_or_else(|| "Unranked".to_string());
-            let agent_name = state
-                .players
-                .first()
-                .map(|p| p.agent_name.clone())
-                .unwrap_or_default();
-            let game_state = state.game_state.clone();
-            let match_context = state.match_context.clone();
-            drop(state);
-
-            let mut discord_client = std::mem::replace(&mut discord, DiscordRpc::new());
-            let update_task = tokio::task::spawn_blocking(move || {
-                discord_client.update(&game_state, match_context.as_ref(), &rank_name, &agent_name);
-                discord_client
-            });
-
-            match tokio::time::timeout(DISCORD_RPC_UPDATE_TIMEOUT, update_task).await {
-                Ok(Ok(updated_client)) => {
-                    discord = updated_client;
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!("Discord RPC update task failed: {}", error);
-                    discord_rpc_available = false;
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "Discord RPC update timed out; disabling it until settings change or restart"
-                    );
-                    discord_rpc_available = false;
                 }
             }
         }

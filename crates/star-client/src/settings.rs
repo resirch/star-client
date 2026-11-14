@@ -145,11 +145,6 @@ pub fn render(
                             );
                             setting_checkbox(
                                 ui,
-                                &mut settings_state.draft.behavior.discord_rpc,
-                                "Discord RPC",
-                            );
-                            setting_checkbox(
-                                ui,
                                 &mut settings_state.draft.behavior.auto_check_updates,
                                 "Auto Check Updates",
                             );
@@ -160,6 +155,56 @@ pub fn render(
                                 &mut settings_state.draft.behavior.launch_without_terminal,
                                 "Hide Terminal (restart required)",
                             );
+                        });
+
+                        settings_section(ui, "Discord Rich Presence", |ui| {
+                            setting_checkbox(
+                                ui,
+                                &mut settings_state.draft.behavior.discord_rpc,
+                                "Enabled",
+                            );
+                            let enabled = settings_state.draft.behavior.discord_rpc;
+                            let discord = &mut settings_state.draft.discord;
+                            ui.add_enabled_ui(enabled, |ui| {
+                                ui.indent("discord_rpc_options", |ui| {
+                                    setting_checkbox(
+                                        ui,
+                                        &mut discord.show_map_image,
+                                        "Map Loading Screen Image",
+                                    );
+                                    setting_checkbox(ui, &mut discord.show_mode, "Game Mode");
+                                    setting_checkbox(ui, &mut discord.show_map_name, "Map Name");
+                                    setting_checkbox(ui, &mut discord.show_score, "Match Score");
+                                    setting_checkbox(ui, &mut discord.show_rank, "Rank");
+                                    setting_checkbox(ui, &mut discord.show_rr, "RR");
+                                    setting_checkbox(ui, &mut discord.show_agent, "Agent");
+                                    setting_checkbox(
+                                        ui,
+                                        &mut discord.show_party_size,
+                                        "Party Size",
+                                    );
+                                    setting_checkbox(
+                                        ui,
+                                        &mut discord.show_queue_status,
+                                        "Queue Status & Timer",
+                                    );
+                                    setting_checkbox(
+                                        ui,
+                                        &mut discord.show_account_level,
+                                        "Account Level",
+                                    );
+                                    setting_checkbox(
+                                        ui,
+                                        &mut discord.show_elapsed_time,
+                                        "Elapsed Time",
+                                    );
+                                    setting_checkbox(
+                                        ui,
+                                        &mut discord.show_profile_button,
+                                        "Tracker.gg Profile Button",
+                                    );
+                                });
+                            });
                         });
 
                         settings_section(ui, "Features", |ui| {

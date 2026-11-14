@@ -488,6 +488,7 @@ mod tests {
         MatchContext {
             map: MapInfo {
                 name: "Gauntlet".into(),
+                splash: None,
             },
             queue: "hurmgauntlet".into(),
             mode: "gauntlet".into(),
@@ -625,6 +626,7 @@ mod tests {
         let ctx = MatchContext {
             map: MapInfo {
                 name: "Ascent".into(),
+                splash: None,
             },
             queue: "swiftplay".into(),
             mode: "swiftplay".into(),
