@@ -234,7 +234,45 @@ impl RiotApiClient {
         Ok(resp)
     }
 
+    /// Fetches match details into a caller-chosen shape, so callers that only
+    /// need a few fields (e.g. party IDs) skip deserializing round data.
+    pub async fn get_match_details_as<T: serde::de::DeserializeOwned>(
+        &self,
+        match_id: &str,
+    ) -> Result<T> {
+        let url = endpoints::match_details(&self.auth, match_id);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.riot_headers())
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp)
+    }
+
     // --- Match History ---
+
+    /// Recent match history with a caller-chosen depth (newest first).
+    pub async fn get_match_history_depth(
+        &self,
+        puuid: &str,
+        depth: usize,
+    ) -> Result<serde_json::Value> {
+        let url = endpoints::match_history_depth(&self.auth, puuid, depth);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.riot_headers())
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp)
+    }
 
     pub async fn get_match_history(&self, puuid: &str) -> Result<serde_json::Value> {
         let url = endpoints::match_history(&self.auth, puuid);

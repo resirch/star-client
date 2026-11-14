@@ -48,14 +48,17 @@ fn parse_lockfile(contents: &str) -> Result<LockfileData> {
 }
 
 pub fn wait_for_lockfile() -> LockfileData {
-    tracing::info!("Waiting for Riot Client...");
+    let mut logged_waiting = false;
     loop {
         match read_lockfile() {
-            Ok(data) => {
-                tracing::info!("Lockfile found on port {}", data.port);
-                return data;
+            Ok(data) => return data,
+            Err(_) => {
+                if !logged_waiting {
+                    tracing::info!("Waiting for Riot Client...");
+                    logged_waiting = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
             }
-            Err(_) => std::thread::sleep(std::time::Duration::from_secs(2)),
         }
     }
 }
