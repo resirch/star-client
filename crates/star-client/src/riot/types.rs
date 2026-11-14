@@ -430,6 +430,8 @@ pub struct MapData {
     pub display_name: String,
     pub map_url: Option<String>,
     pub display_icon: Option<String>,
+    /// Loading-screen artwork.
+    pub splash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

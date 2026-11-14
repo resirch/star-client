@@ -15,6 +15,8 @@ pub struct RiotApiClient {
     agent_cache_fetched_at: Option<Instant>,
     unknown_agent_uuids: HashSet<String>,
     map_cache: HashMap<String, String>,
+    /// Map URL/UUID (lowercase) -> loading-screen image URL.
+    map_splash_cache: HashMap<String, String>,
     map_cache_fetched_at: Option<Instant>,
     unknown_map_ids: HashSet<String>,
     skin_cache: HashMap<String, SkinLevelInfo>,
@@ -36,6 +38,7 @@ impl RiotApiClient {
             agent_cache_fetched_at: None,
             unknown_agent_uuids: HashSet::new(),
             map_cache: HashMap::new(),
+            map_splash_cache: HashMap::new(),
             map_cache_fetched_at: None,
             unknown_map_ids: HashSet::new(),
             skin_cache: HashMap::new(),
@@ -132,6 +135,23 @@ impl RiotApiClient {
                 Some((presence.puuid, private))
             })
             .collect())
+    }
+
+    /// The local player's decoded Valorant presence as raw JSON. Riot moves
+    /// fields between nested objects across patches, so callers that need
+    /// many fields read them from the JSON directly.
+    pub async fn get_self_presence_json(&self) -> Result<Option<serde_json::Value>> {
+        let presences = self.get_presences().await?;
+        Ok(presences
+            .into_iter()
+            .find(|presence| presence.puuid == self.auth.puuid && presence.product == "valorant")
+            .and_then(|presence| {
+                let encoded = presence.private?;
+                let decoded =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                        .ok()?;
+                serde_json::from_slice(&decoded).ok()
+            }))
     }
 
     pub async fn get_self_presence(&self) -> Result<Option<PrivatePresence>> {
@@ -555,6 +575,13 @@ impl RiotApiClient {
         None
     }
 
+    /// Loading-screen image for a map URL or UUID already seen by `resolve_map`.
+    pub fn map_splash(&self, map_id: &str) -> Option<String> {
+        self.map_splash_cache
+            .get(&map_id.trim().to_lowercase())
+            .cloned()
+    }
+
     async fn fetch_maps_if_needed(&mut self, refresh_if_stale: bool) -> Result<()> {
         const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -585,16 +612,23 @@ impl RiotApiClient {
         if let Some(maps) = resp.data {
             tracing::debug!("Loaded {} maps into cache", maps.len());
             self.map_cache.clear();
+            self.map_splash_cache.clear();
             for map in maps {
                 let display_name = map.display_name;
                 let uuid_key = map.uuid.to_lowercase();
                 self.unknown_map_ids.remove(&uuid_key);
-                self.map_cache.insert(uuid_key, display_name.clone());
+                self.map_cache.insert(uuid_key.clone(), display_name.clone());
+                if let Some(splash) = &map.splash {
+                    self.map_splash_cache.insert(uuid_key, splash.clone());
+                }
 
                 if let Some(map_url) = map.map_url {
                     let url_key = map_url.to_lowercase();
                     self.unknown_map_ids.remove(&url_key);
-                    self.map_cache.insert(url_key, display_name);
+                    self.map_cache.insert(url_key.clone(), display_name);
+                    if let Some(splash) = map.splash {
+                        self.map_splash_cache.insert(url_key, splash);
+                    }
                 }
             }
             self.map_cache_fetched_at = Some(Instant::now());
