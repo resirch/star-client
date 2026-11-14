@@ -74,6 +74,33 @@ pub struct PrivatePresence {
     pub party_size: i32,
     #[serde(default)]
     pub party_version: i64,
+    /// Rounds the party owner's team has won in the current match.
+    #[serde(default, deserialize_with = "lenient_round_score")]
+    pub party_owner_match_score_ally_team: Option<u32>,
+    /// Rounds the party owner's opponents have won in the current match.
+    #[serde(default, deserialize_with = "lenient_round_score")]
+    pub party_owner_match_score_enemy_team: Option<u32>,
+}
+
+impl PrivatePresence {
+    /// Rounds completed in the current match, from the presence scoreline.
+    pub fn rounds_played(&self) -> Option<u32> {
+        Some(self.party_owner_match_score_ally_team? + self.party_owner_match_score_enemy_team?)
+    }
+}
+
+/// Reads a score without failing the whole presence on an odd value.
+fn lenient_round_score<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    })
+    .and_then(|score| u32::try_from(score).ok()))
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

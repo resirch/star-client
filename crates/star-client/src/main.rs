@@ -459,6 +459,7 @@ fn run_overlay(
                         state.match_context.as_ref(),
                         &state.local_puuid,
                         &state.config,
+                        state.sides_swapped(),
                     );
                 }
             }
