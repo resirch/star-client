@@ -308,8 +308,11 @@ pub async fn run_data_loop(
             }
 
             // Carry over enriched data and party groupings when transitioning from
-            // pregame to ingame (same game, different match_id).
-            if is_new_match && matches!(previous_state, GameState::Pregame { .. }) {
+            // pregame to ingame. Riot usually keeps the same match_id across that
+            // transition, so this cannot depend on `is_new_match`.
+            if matches!(previous_state, GameState::Pregame { .. })
+                && (is_new_match || matches!(new_state, GameState::Ingame { .. }))
+            {
                 let state = app_state.read().await;
                 let previous_by_puuid: HashMap<&str, &PlayerDisplayData> = state
                     .players
@@ -366,8 +369,26 @@ pub async fn run_data_loop(
             carry_over_existing_enrichment(&mut players_data, &existing_players_by_puuid);
             carry_over_roster_teams(&mut players_data, &existing_players_by_puuid);
 
+            let ctx = match &new_state {
+                GameState::Pregame { match_id } => {
+                    match_data::fetch_pregame_context(&mut api_guard, match_id)
+                        .await
+                        .ok()
+                }
+                GameState::Ingame { match_id } => {
+                    match_data::fetch_coregame_context(&mut api_guard, match_id)
+                        .await
+                        .ok()
+                }
+                _ => None,
+            };
+
+            let gauntlet_match = ctx
+                .as_ref()
+                .is_some_and(teams::is_gauntlet_context);
+
             let mut roster_cache_update: HashMap<String, String> = HashMap::new();
-            if matches!(&new_state, GameState::Ingame { .. }) {
+            if gauntlet_match && matches!(&new_state, GameState::Ingame { .. }) {
                 let (mut pregame_match_id, mut roster_cache) = {
                     let state = app_state.read().await;
                     (state.pregame_match_id.clone(), state.roster_team_by_puuid.clone())
@@ -400,7 +421,7 @@ pub async fn run_data_loop(
                 }
                 players::apply_roster_team_cache(&mut players_data, &roster_cache);
                 players::sanitize_roster_team_ids(&mut players_data);
-            } else if matches!(&new_state, GameState::Pregame { .. }) {
+            } else if gauntlet_match && matches!(&new_state, GameState::Pregame { .. }) {
                 roster_cache_update = players::roster_team_map_from_players(&players_data);
             }
 
@@ -416,19 +437,6 @@ pub async fn run_data_loop(
                 } else {
                     HashMap::new()
                 }
-            };
-            let ctx = match &new_state {
-                GameState::Pregame { match_id } => {
-                    match_data::fetch_pregame_context(&mut api_guard, match_id)
-                        .await
-                        .ok()
-                }
-                GameState::Ingame { match_id } => {
-                    match_data::fetch_coregame_context(&mut api_guard, match_id)
-                        .await
-                        .ok()
-                }
-                _ => None,
             };
             let map_name = ctx
                 .as_ref()
@@ -463,6 +471,7 @@ pub async fn run_data_loop(
                                 .get(&player.puuid)
                                 .filter(|previous| previous.enriched)
                                 .map(|previous| previous.kd),
+                            matches!(new_state, GameState::Ingame { .. }),
                         );
                         continue;
                     }
@@ -484,14 +493,16 @@ pub async fn run_data_loop(
             // Show basic info immediately
             {
                 let mut state = app_state.write().await;
-                players::merge_roster_team_cache(
-                    &mut state.roster_team_by_puuid,
-                    &roster_cache_update,
-                );
-                players::merge_roster_team_cache(
-                    &mut state.roster_team_by_puuid,
-                    &players::roster_team_map_from_players(&players_data),
-                );
+                if gauntlet_match {
+                    players::merge_roster_team_cache(
+                        &mut state.roster_team_by_puuid,
+                        &roster_cache_update,
+                    );
+                    players::merge_roster_team_cache(
+                        &mut state.roster_team_by_puuid,
+                        &players::roster_team_map_from_players(&players_data),
+                    );
+                }
                 state.players = players_data;
                 state.match_context = ctx;
                 state.last_match_id = match_id.clone();
@@ -731,6 +742,7 @@ pub async fn run_data_loop(
                         match_id,
                         &map_name,
                         &existing_players_by_puuid,
+                        false,
                     );
                 }
                 let mut state = app_state.write().await;
@@ -781,6 +793,7 @@ pub async fn run_data_loop(
                         match_id,
                         &map_name,
                         &existing_players_by_puuid,
+                        true,
                     );
                 }
                 let mut state = app_state.write().await;
@@ -1128,6 +1141,7 @@ fn sync_current_match_history(
     match_id: &str,
     map_name: &str,
     existing_players_by_puuid: &HashMap<String, PlayerDisplayData>,
+    reached_ingame: bool,
 ) {
     for player in players {
         hydrate_player_history(
@@ -1150,6 +1164,7 @@ fn sync_current_match_history(
             &player.agent_name,
             !player.game_name.is_empty(),
             None,
+            reached_ingame,
         );
     }
 }
@@ -1324,7 +1339,7 @@ async fn apply_party_lookups(
     players: &mut [PlayerDisplayData],
     party_finder: bool,
 ) {
-    let skip_history_party_finder = players.len() >= 10
+    let skip_history_party_finder = players.len() > teams::STANDARD_LOBBY_SIZE
         || teams::duo_party_group_count_for_roster(players) >= teams::MIN_DUO_PARTY_GROUPS_FOR_MULTI_TEAM;
 
     if party_finder
@@ -1736,6 +1751,7 @@ mod tests {
                 "match-1",
                 "Haven",
                 &HashMap::new(),
+                true,
             );
 
             let during_match = history.encounter("player-1", "match-1").unwrap();

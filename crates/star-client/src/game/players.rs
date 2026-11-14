@@ -85,6 +85,11 @@ pub async fn fetch_pregame_players(
     let mut players = Vec::new();
     for (team_index, team) in pregame_teams.iter().enumerate() {
         let team_id = roster_key_for_pregame_team(team, team_index);
+        let side_team_id = team
+            .team_i_d
+            .clone()
+            .filter(|id| teams::is_standard_team_id(id))
+            .unwrap_or_default();
         for p in &team.players {
             let mut display = build_basic_player(&p.subject, &name_map);
 
@@ -101,6 +106,7 @@ pub async fn fetch_pregame_players(
 
             display.team_id = team_id.clone();
             display.roster_team_id = team_id.clone();
+            display.side_team_id = side_team_id.clone();
             if let Some(party_id) = p.party_id.as_deref().filter(|id| !id.is_empty()) {
                 display.party_id = party_id.to_string();
             }
@@ -111,7 +117,7 @@ pub async fn fetch_pregame_players(
     party::apply_match_party_ids(&mut players);
     capture_match_party_ids(&mut players);
     sanitize_roster_team_ids(&mut players);
-    teams::apply_incognito_team_markers(&mut players);
+    teams::apply_incognito_team_markers(&mut players, None);
     tracing::debug!("Built {} pregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
@@ -182,7 +188,7 @@ pub async fn fetch_coregame_players(
     party::apply_match_party_ids(&mut players);
     capture_match_party_ids(&mut players);
     finalize_roster_team_ids_from_match_team(&mut players);
-    teams::apply_incognito_team_markers(&mut players);
+    teams::apply_incognito_team_markers(&mut players, None);
     tracing::debug!("Built {} coregame PlayerDisplayData entries", players.len());
     Ok(players)
 }
@@ -341,7 +347,7 @@ fn pregame_match_teams(pregame: &PregameMatchResponse) -> Vec<PregameTeam> {
 /// This ensures incognito party members have their `party_id` set so the
 /// overlay can reveal their names (matching in-game behaviour).
 pub async fn mark_party_from_presences(api: &RiotApiClient, players: &mut [PlayerDisplayData]) {
-    if players.len() >= 10 {
+    if players.len() > teams::STANDARD_LOBBY_SIZE {
         return;
     }
 
