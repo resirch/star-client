@@ -2,16 +2,27 @@
 //! Discord. Everything here is pure so it can be tested without Discord.
 
 use crate::config::DiscordConfig;
-use crate::game::match_data::{mode_display_name, MatchContext};
+use crate::game::match_data::{is_range_flow, mode_display_name, MatchContext};
 use crate::game::state::GameState;
 use crate::riot::types::{
     presence_number as number, presence_text as text, rank_name, PlayerDisplayData,
 };
 use serde_json::Value;
 
+/// The game name Discord shows ("Playing VALORANT"), overriding the
+/// Discord application's own name.
+pub const GAME_NAME: &str = "VALORANT";
+
+/// Credited in the large image's hover text, which links here.
+pub const STAR_CLIENT_NAME: &str = "Star Client";
+pub const STAR_CLIENT_URL: &str = "https://github.com/resirch/star-client";
+
 /// Shown in the lobby, and in a match when the map image is off or unknown.
 pub const VALORANT_LOGO_URL: &str =
     "https://upload.wikimedia.org/wikipedia/commons/f/fc/Valorant_logo_-_pink_color_version_%28cropped%29.png";
+
+/// Shown instead of the map name and queue in the Range.
+const RANGE_NAME: &str = "The Range";
 
 /// Current competitive tier set on valorant-api.com.
 const RANK_ICON_BASE: &str =
@@ -25,6 +36,7 @@ const RANK_ICON_BASE: &str =
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SelfPresence {
     pub session_loop_state: String,
+    pub provisioning_flow: String,
     pub queue_id: String,
     pub party_id: String,
     pub party_state: String,
@@ -47,6 +59,7 @@ impl SelfPresence {
 
         Self {
             session_loop_state: text(value, matched, "sessionLoopState"),
+            provisioning_flow: text(value, matched, "provisioningFlow"),
             queue_id: text(value, matched, "queueId"),
             party_id: text(value, party, "partyId"),
             party_state: text(value, party, "partyState"),
@@ -84,6 +97,9 @@ fn parse_queue_entry_time(raw: &str) -> Option<i64> {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ActivityView {
     pub details: String,
+    /// Makes the details line a link. Unlike buttons, which Discord hides
+    /// from the player whose presence it is, this is visible to them too.
+    pub details_url: Option<String>,
     pub state: String,
     pub large_image: String,
     pub large_text: String,
@@ -131,6 +147,13 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
         .filter(|name| config.show_agent && !name.is_empty() && *name != "Unknown");
     let agent_icon = agent.and_then(|_| input.player.and_then(|p| p.agent_icon.clone()));
 
+    let in_range = input.context.is_some_and(MatchContext::is_range)
+        || presence.is_some_and(|p| is_range_flow(&p.provisioning_flow));
+    // Players can queue from the Range; their party's queue is the one they
+    // are waiting on.
+    let queueing = config.show_queue_status && presence.is_some_and(SelfPresence::in_queue);
+    let presence_queue_id = presence.map(|p| p.queue_id.as_str()).unwrap_or_default();
+
     let queue_id = input
         .context
         .map(|c| c.queue.as_str())
@@ -153,7 +176,7 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
 
     let mut view = ActivityView {
         large_image: VALORANT_LOGO_URL.to_string(),
-        large_text: "VALORANT".to_string(),
+        large_text: GAME_NAME.to_string(),
         start_timestamp: config.show_elapsed_time.then_some(input.state_started_at),
         ..Default::default()
     };
@@ -163,16 +186,14 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
         // state alone can be left over from before.
         GameState::Menu if presence.is_none() => return None,
         GameState::Menu => {
-            let presence_in_queue =
-                config.show_queue_status && presence.is_some_and(SelfPresence::in_queue);
-            view.details = if presence_in_queue {
+            view.details = if queueing {
                 "In Queue".to_string()
             } else if presence.is_some_and(SelfPresence::in_custom_lobby) {
                 "Custom Game Lobby".to_string()
             } else {
                 "In Lobby".to_string()
             };
-            if presence_in_queue {
+            if queueing {
                 if let Some(entered) = presence.and_then(|p| p.queue_entry_time) {
                     view.start_timestamp = Some(entered);
                 }
@@ -193,6 +214,32 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
             apply_map_image(&mut view, map_image, map_name);
             match agent_icon {
                 Some(icon) => set_small_image(&mut view, Some(icon), agent.map(str::to_string)),
+                None => set_small_image(&mut view, rank_icon, rank_text),
+            }
+        }
+        GameState::Ingame { .. } if in_range => {
+            let agent = agent.map(str::to_string);
+            if queueing {
+                let queue_mode = config
+                    .show_mode
+                    .then(|| display_mode(presence_queue_id, None))
+                    .flatten();
+                view.details = join([Some("In Queue".to_string()), queue_mode]);
+                view.state = join([
+                    Some(RANGE_NAME.to_string()),
+                    agent.clone(),
+                    rank_text.clone(),
+                ]);
+                if let Some(entered) = presence.and_then(|p| p.queue_entry_time) {
+                    view.start_timestamp = Some(entered);
+                }
+            } else {
+                view.details = RANGE_NAME.to_string();
+                view.state = join([agent.clone(), rank_text.clone()]);
+            }
+            apply_map_image(&mut view, map_image, Some(RANGE_NAME));
+            match agent_icon {
+                Some(icon) => set_small_image(&mut view, Some(icon), agent),
                 None => set_small_image(&mut view, rank_icon, rank_text),
             }
         }
@@ -220,8 +267,13 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
             if !in_match_loading {
                 return None;
             }
-            view.details = "Loading Into Match".to_string();
-            view.state = join([mode, rank_text.clone()]);
+            view.details = if in_range {
+                format!("Loading Into {RANGE_NAME}")
+            } else {
+                "Loading Into Match".to_string()
+            };
+            // The Range has no mode; the party's queue isn't what's loading.
+            view.state = join([mode.filter(|_| !in_range), rank_text.clone()]);
             set_small_image(&mut view, rank_icon, rank_text);
         }
     }
@@ -243,13 +295,12 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
             .filter(|p| !p.game_name.is_empty() && !p.tag_line.is_empty() && !p.is_incognito)
         {
             let riot_id = format!("{}#{}", player.game_name, player.tag_line);
-            view.button = Some((
-                "Tracker.gg Profile".to_string(),
-                format!(
-                    "https://tracker.gg/valorant/profile/riot/{}/overview",
-                    percent_encode(&riot_id)
-                ),
-            ));
+            let url = format!(
+                "https://tracker.gg/valorant/profile/riot/{}/overview",
+                percent_encode(&riot_id)
+            );
+            view.details_url = Some(url.clone());
+            view.button = Some(("Tracker.gg Profile".to_string(), url));
         }
     }
 
@@ -258,6 +309,8 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
     if view.state.chars().count() < 2 {
         view.state = "VALORANT".to_string();
     }
+    view.large_text = format!("{} | {}", view.large_text, STAR_CLIENT_NAME);
+
     view.details = truncate(&view.details, 128);
     view.state = truncate(&view.state, 128);
 
@@ -278,7 +331,7 @@ impl RankInfo {
         if let Some(player) = input.player.filter(|p| p.current_rank > 0) {
             return Self {
                 tier: player.current_rank,
-                name: rank_name(player.current_rank).to_string(),
+                name: roman_rank_name(player.current_rank),
                 rr: Some(player.rr),
                 leaderboard: player.leaderboard_position,
             };
@@ -289,7 +342,7 @@ impl RankInfo {
             .unwrap_or_default();
         Self {
             tier,
-            name: rank_name(tier).to_string(),
+            name: roman_rank_name(tier),
             rr: None,
             leaderboard: presence
                 .map(|p| p.leaderboard_position as i32)
@@ -304,13 +357,31 @@ impl RankInfo {
         let mut label = self.name.clone();
         if show_rr {
             if let Some(rr) = self.rr {
-                label.push_str(&format!(" {rr} RR"));
+                label.push_str(&format!(" - {rr} RR"));
             }
         }
         if self.leaderboard > 0 {
             label.push_str(&format!(" #{}", self.leaderboard));
         }
         Some(label)
+    }
+}
+
+/// "Diamond 2" becomes "Diamond II"; names without a division are unchanged.
+fn roman_rank_name(tier: i32) -> String {
+    let name = rank_name(tier);
+    let roman = |division| match division {
+        "1" => Some("I"),
+        "2" => Some("II"),
+        "3" => Some("III"),
+        _ => None,
+    };
+    match name.rsplit_once(' ') {
+        Some((base, division)) => match roman(division) {
+            Some(numeral) => format!("{base} {numeral}"),
+            None => name.to_string(),
+        },
+        None => name.to_string(),
     }
 }
 
@@ -442,7 +513,63 @@ mod tests {
             queue: "competitive".into(),
             mode: String::new(),
             server_id: String::new(),
+            provisioning_flow: "Matchmaking".into(),
         }
+    }
+
+    fn range_context() -> MatchContext {
+        MatchContext {
+            map: MapInfo {
+                name: "The Range".into(),
+                splash: Some("https://example.com/range.png".into()),
+            },
+            queue: String::new(),
+            mode: String::new(),
+            server_id: String::new(),
+            provisioning_flow: "ShootingRange".into(),
+        }
+    }
+
+    fn range_view(presence: &SelfPresence) -> ActivityView {
+        let config = DiscordConfig::default();
+        let player = player();
+        let context = range_context();
+        build_activity(&ActivityInput {
+            game_state: &GameState::Ingame {
+                match_id: "range".into(),
+            },
+            context: Some(&context),
+            presence: Some(presence),
+            player: Some(&player),
+            config: &config,
+            state_started_at: 100,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn range_shows_queue_without_score() {
+        let mut presence = SelfPresence::from_json(&current_presence_json());
+        presence.session_loop_state = "INGAME".into();
+        let view = range_view(&presence);
+
+        assert_eq!(view.details, "In Queue | Competitive");
+        assert_eq!(view.state, "The Range | Jett | Diamond II - 42 RR");
+        assert_eq!(view.start_timestamp, Some(1_794_679_353));
+        assert_eq!(view.large_image, "https://example.com/range.png");
+        assert_eq!(view.large_text, "The Range | Star Client");
+    }
+
+    #[test]
+    fn range_without_queue_shows_agent_and_rank_only() {
+        let mut presence = SelfPresence::from_json(&current_presence_json());
+        presence.session_loop_state = "INGAME".into();
+        presence.party_state = "DEFAULT".into();
+        let view = range_view(&presence);
+
+        assert_eq!(view.details, "The Range");
+        assert_eq!(view.state, "Jett | Diamond II - 42 RR");
+        assert_eq!(view.start_timestamp, Some(100));
     }
 
     #[test]
@@ -478,8 +605,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(view.details, "In Queue");
-        assert_eq!(view.state, "Competitive | Diamond 1 | Level 379");
+        assert_eq!(view.state, "Competitive | Diamond I | Level 379");
         assert_eq!(view.large_image, VALORANT_LOGO_URL);
+        assert_eq!(view.large_text, "VALORANT | Star Client");
         assert_eq!(view.party, Some(("party-1".into(), 2, 5)));
         assert_eq!(view.start_timestamp, Some(1_794_679_353));
         assert!(view.small_image.unwrap().ends_with("/18/largeicon.png"));
@@ -504,15 +632,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(view.details, "Competitive | Ascent");
-        assert_eq!(view.state, "7 - 5 | Jett | Diamond 2 42 RR");
+        assert_eq!(view.state, "7 - 5 | Jett | Diamond II - 42 RR");
         assert_eq!(view.large_image, "https://example.com/ascent.png");
-        assert_eq!(view.large_text, "Ascent");
+        assert_eq!(view.large_text, "Ascent | Star Client");
         assert_eq!(view.small_text.as_deref(), Some("Jett"));
         assert_eq!(view.start_timestamp, Some(100));
-        assert_eq!(
-            view.button.unwrap().1,
-            "https://tracker.gg/valorant/profile/riot/Star%20Player%23NA1/overview"
-        );
+        let profile = "https://tracker.gg/valorant/profile/riot/Star%20Player%23NA1/overview";
+        assert_eq!(view.button.unwrap().1, profile);
+        assert_eq!(view.details_url.as_deref(), Some(profile));
     }
 
     #[test]
@@ -550,6 +677,15 @@ mod tests {
         assert_eq!(view.party, None);
         assert_eq!(view.start_timestamp, None);
         assert_eq!(view.button, None);
+        assert_eq!(view.details_url, None);
+    }
+
+    #[test]
+    fn rank_divisions_use_roman_numerals() {
+        assert_eq!(roman_rank_name(3), "Iron I");
+        assert_eq!(roman_rank_name(20), "Diamond III");
+        assert_eq!(roman_rank_name(27), "Radiant");
+        assert_eq!(roman_rank_name(0), "Unranked");
     }
 
     #[test]

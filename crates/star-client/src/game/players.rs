@@ -154,6 +154,13 @@ pub async fn fetch_coregame_players(
         })
         .unwrap_or_default();
 
+    // Players can swap agents in the Range, but the match keeps the agent
+    // they loaded in with, so prefer the loadout's agent there.
+    let in_range = coregame
+        .provisioning_flow
+        .as_deref()
+        .is_some_and(crate::game::match_data::is_range_flow);
+
     let mut players = Vec::new();
     for p in &coregame.players {
         let mut display = build_basic_player(&p.subject, &name_map);
@@ -163,7 +170,22 @@ pub async fn fetch_coregame_players(
             display.is_incognito = identity.incognito.unwrap_or(false);
         }
 
-        if let Some(char_id) = selected_character_id(p.character_i_d.as_deref()) {
+        let match_character = selected_character_id(p.character_i_d.as_deref());
+        let loadout_character = loadout_map
+            .get(&p.subject)
+            .and_then(|loadout| selected_character_id(loadout.character_i_d.as_deref()));
+        let character = if in_range {
+            tracing::debug!(
+                "Range agent for {}: match={:?}, loadout={:?}",
+                &p.subject[..8.min(p.subject.len())],
+                match_character,
+                loadout_character
+            );
+            loadout_character.or(match_character)
+        } else {
+            match_character
+        };
+        if let Some(char_id) = character {
             let (agent_name, agent_icon) = api.resolve_agent(char_id).await;
             display.agent_name = agent_name;
             display.agent_icon = agent_icon;
