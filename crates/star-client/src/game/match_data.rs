@@ -4,6 +4,8 @@ use anyhow::Result;
 #[derive(Clone)]
 pub struct MapInfo {
     pub name: String,
+    /// Loading-screen image URL from valorant-api.com, when known.
+    pub splash: Option<String>,
 }
 
 #[derive(Clone)]
@@ -50,7 +52,10 @@ async fn resolve_map_name(api: &mut RiotApiClient, map_id: &str) -> MapInfo {
         .await
         .unwrap_or_else(|| fallback_map_name(map_id).to_string());
 
-    MapInfo { name }
+    MapInfo {
+        name,
+        splash: api.map_splash(map_id),
+    }
 }
 
 fn fallback_map_name(map_id: &str) -> &'static str {
