@@ -2,7 +2,7 @@
 //! Discord. Everything here is pure so it can be tested without Discord.
 
 use crate::config::DiscordConfig;
-use crate::game::match_data::{mode_display_name, MatchContext};
+use crate::game::match_data::{is_range_flow, mode_display_name, MatchContext};
 use crate::game::state::GameState;
 use crate::riot::types::{
     presence_number as number, presence_text as text, rank_name, PlayerDisplayData,
@@ -21,6 +21,9 @@ pub const STAR_CLIENT_URL: &str = "https://github.com/resirch/star-client";
 pub const VALORANT_LOGO_URL: &str =
     "https://upload.wikimedia.org/wikipedia/commons/f/fc/Valorant_logo_-_pink_color_version_%28cropped%29.png";
 
+/// Shown instead of the map name and queue in the Range.
+const RANGE_NAME: &str = "The Range";
+
 /// Current competitive tier set on valorant-api.com.
 const RANK_ICON_BASE: &str =
     "https://media.valorant-api.com/competitivetiers/03621f52-342b-cf4e-4f86-9350a49c6d04";
@@ -33,6 +36,7 @@ const RANK_ICON_BASE: &str =
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SelfPresence {
     pub session_loop_state: String,
+    pub provisioning_flow: String,
     pub queue_id: String,
     pub party_id: String,
     pub party_state: String,
@@ -55,6 +59,7 @@ impl SelfPresence {
 
         Self {
             session_loop_state: text(value, matched, "sessionLoopState"),
+            provisioning_flow: text(value, matched, "provisioningFlow"),
             queue_id: text(value, matched, "queueId"),
             party_id: text(value, party, "partyId"),
             party_state: text(value, party, "partyState"),
@@ -142,6 +147,13 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
         .filter(|name| config.show_agent && !name.is_empty() && *name != "Unknown");
     let agent_icon = agent.and_then(|_| input.player.and_then(|p| p.agent_icon.clone()));
 
+    let in_range = input.context.is_some_and(MatchContext::is_range)
+        || presence.is_some_and(|p| is_range_flow(&p.provisioning_flow));
+    // Players can queue from the Range; their party's queue is the one they
+    // are waiting on.
+    let queueing = config.show_queue_status && presence.is_some_and(SelfPresence::in_queue);
+    let presence_queue_id = presence.map(|p| p.queue_id.as_str()).unwrap_or_default();
+
     let queue_id = input
         .context
         .map(|c| c.queue.as_str())
@@ -174,16 +186,14 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
         // state alone can be left over from before.
         GameState::Menu if presence.is_none() => return None,
         GameState::Menu => {
-            let presence_in_queue =
-                config.show_queue_status && presence.is_some_and(SelfPresence::in_queue);
-            view.details = if presence_in_queue {
+            view.details = if queueing {
                 "In Queue".to_string()
             } else if presence.is_some_and(SelfPresence::in_custom_lobby) {
                 "Custom Game Lobby".to_string()
             } else {
                 "In Lobby".to_string()
             };
-            if presence_in_queue {
+            if queueing {
                 if let Some(entered) = presence.and_then(|p| p.queue_entry_time) {
                     view.start_timestamp = Some(entered);
                 }
@@ -204,6 +214,32 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
             apply_map_image(&mut view, map_image, map_name);
             match agent_icon {
                 Some(icon) => set_small_image(&mut view, Some(icon), agent.map(str::to_string)),
+                None => set_small_image(&mut view, rank_icon, rank_text),
+            }
+        }
+        GameState::Ingame { .. } if in_range => {
+            let agent = agent.map(str::to_string);
+            if queueing {
+                let queue_mode = config
+                    .show_mode
+                    .then(|| display_mode(presence_queue_id, None))
+                    .flatten();
+                view.details = join([Some("In Queue".to_string()), queue_mode]);
+                view.state = join([
+                    Some(RANGE_NAME.to_string()),
+                    agent.clone(),
+                    rank_text.clone(),
+                ]);
+                if let Some(entered) = presence.and_then(|p| p.queue_entry_time) {
+                    view.start_timestamp = Some(entered);
+                }
+            } else {
+                view.details = RANGE_NAME.to_string();
+                view.state = join([agent.clone(), rank_text.clone()]);
+            }
+            apply_map_image(&mut view, map_image, Some(RANGE_NAME));
+            match agent_icon {
+                Some(icon) => set_small_image(&mut view, Some(icon), agent),
                 None => set_small_image(&mut view, rank_icon, rank_text),
             }
         }
@@ -231,8 +267,13 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
             if !in_match_loading {
                 return None;
             }
-            view.details = "Loading Into Match".to_string();
-            view.state = join([mode, rank_text.clone()]);
+            view.details = if in_range {
+                format!("Loading Into {RANGE_NAME}")
+            } else {
+                "Loading Into Match".to_string()
+            };
+            // The Range has no mode; the party's queue isn't what's loading.
+            view.state = join([mode.filter(|_| !in_range), rank_text.clone()]);
             set_small_image(&mut view, rank_icon, rank_text);
         }
     }
@@ -472,7 +513,63 @@ mod tests {
             queue: "competitive".into(),
             mode: String::new(),
             server_id: String::new(),
+            provisioning_flow: "Matchmaking".into(),
         }
+    }
+
+    fn range_context() -> MatchContext {
+        MatchContext {
+            map: MapInfo {
+                name: "The Range".into(),
+                splash: Some("https://example.com/range.png".into()),
+            },
+            queue: String::new(),
+            mode: String::new(),
+            server_id: String::new(),
+            provisioning_flow: "ShootingRange".into(),
+        }
+    }
+
+    fn range_view(presence: &SelfPresence) -> ActivityView {
+        let config = DiscordConfig::default();
+        let player = player();
+        let context = range_context();
+        build_activity(&ActivityInput {
+            game_state: &GameState::Ingame {
+                match_id: "range".into(),
+            },
+            context: Some(&context),
+            presence: Some(presence),
+            player: Some(&player),
+            config: &config,
+            state_started_at: 100,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn range_shows_queue_without_score() {
+        let mut presence = SelfPresence::from_json(&current_presence_json());
+        presence.session_loop_state = "INGAME".into();
+        let view = range_view(&presence);
+
+        assert_eq!(view.details, "In Queue | Competitive");
+        assert_eq!(view.state, "The Range | Jett | Diamond II - 42 RR");
+        assert_eq!(view.start_timestamp, Some(1_794_679_353));
+        assert_eq!(view.large_image, "https://example.com/range.png");
+        assert_eq!(view.large_text, "The Range | Star Client");
+    }
+
+    #[test]
+    fn range_without_queue_shows_agent_and_rank_only() {
+        let mut presence = SelfPresence::from_json(&current_presence_json());
+        presence.session_loop_state = "INGAME".into();
+        presence.party_state = "DEFAULT".into();
+        let view = range_view(&presence);
+
+        assert_eq!(view.details, "The Range");
+        assert_eq!(view.state, "Jett | Diamond II - 42 RR");
+        assert_eq!(view.start_timestamp, Some(100));
     }
 
     #[test]
