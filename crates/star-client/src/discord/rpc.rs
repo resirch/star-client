@@ -1,8 +1,8 @@
-use super::activity::{build_activity, ActivityInput, ActivityView};
+use super::activity::{build_activity, ActivityInput, ActivityView, GAME_NAME, STAR_CLIENT_URL};
 use crate::app::AppState;
 use crate::game::state::GameState;
 use discord_rich_presence::{
-    activity::{Activity, Assets, Button, Party, Timestamps},
+    activity::{Activity, ActivityType, Assets, Button, Party, StatusDisplayType, Timestamps},
     DiscordIpc, DiscordIpcClient,
 };
 use serde_json::{json, Value};
@@ -66,13 +66,7 @@ impl DiscordRpc {
     pub fn connect(&mut self) {
         self.disconnect();
 
-        let mut client = match DiscordIpcClient::new(DISCORD_APP_ID) {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::warn!("Failed to create Discord RPC client: {}", e);
-                return;
-            }
-        };
+        let mut client = DiscordIpcClient::new(DISCORD_APP_ID);
 
         if let Err(e) = client.connect_ipc() {
             tracing::debug!("Discord RPC: Discord desktop app not reachable ({})", e);
@@ -114,7 +108,8 @@ impl DiscordRpc {
 
         let mut assets = Assets::new()
             .large_image(&view.large_image)
-            .large_text(&view.large_text);
+            .large_text(&view.large_text)
+            .large_url(STAR_CLIENT_URL);
         if let Some(image) = &view.small_image {
             assets = assets.small_image(image);
             if let Some(text) = &view.small_text {
@@ -122,10 +117,18 @@ impl DiscordRpc {
             }
         }
 
+        // `name` replaces the Discord application's name, so the profile and
+        // member list read "Playing VALORANT" rather than the app's name.
         let mut activity = Activity::new()
+            .name(GAME_NAME)
+            .activity_type(ActivityType::Playing)
+            .status_display_type(StatusDisplayType::Name)
             .details(&view.details)
             .state(&view.state)
             .assets(assets);
+        if let Some(url) = &view.details_url {
+            activity = activity.details_url(url);
+        }
         if let Some(start) = view.start_timestamp {
             activity = activity.timestamps(Timestamps::new().start(start));
         }

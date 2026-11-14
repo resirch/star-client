@@ -20,7 +20,7 @@ base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 directories = "5"
 tray-icon = "0.19"
-discord-rich-presence = "0.2"
+discord-rich-presence = "1.1"
 winit = "0.30"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }

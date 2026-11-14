@@ -14,6 +14,30 @@ pub struct MatchContext {
     pub queue: String,
     pub mode: String,
     pub server_id: String,
+    /// How the match was created, e.g. "Matchmaking", "CustomGame" or
+    /// "ShootingRange".
+    pub provisioning_flow: String,
+}
+
+impl MatchContext {
+    pub fn is_range(&self) -> bool {
+        is_range_flow(&self.provisioning_flow)
+    }
+}
+
+/// The Range has no queue of its own; Riot marks it by provisioning flow.
+pub fn is_range_flow(provisioning_flow: &str) -> bool {
+    provisioning_flow.eq_ignore_ascii_case("ShootingRange")
+}
+
+/// Fills in the Range's flow from its map path ("/Game/Maps/Poveglia/Range")
+/// when Riot leaves the provisioning flow out.
+fn provisioning_flow_or_range(flow: Option<String>, map_id: &str) -> String {
+    match flow.filter(|flow| !flow.is_empty()) {
+        Some(flow) => flow,
+        None if map_id.to_ascii_lowercase().ends_with("/range") => "ShootingRange".into(),
+        None => String::new(),
+    }
 }
 
 pub async fn fetch_pregame_context(
@@ -25,9 +49,12 @@ pub async fn fetch_pregame_context(
 
     Ok(MatchContext {
         map: resolve_map_name(api, &map_id).await,
-        queue: pregame.queue_i_d.unwrap_or_else(|| "competitive".into()),
+        // Left empty when unknown so callers fall back to presence instead
+        // of guessing a queue.
+        queue: pregame.queue_i_d.unwrap_or_default(),
         mode: pregame.mode.unwrap_or_default(),
         server_id: pregame.game_pod_id.unwrap_or_default(),
+        provisioning_flow: provisioning_flow_or_range(pregame.provisioning_flow_i_d, &map_id),
     })
 }
 
@@ -36,13 +63,15 @@ pub async fn fetch_coregame_context(
     match_id: &str,
 ) -> Result<MatchContext> {
     let coregame = api.get_coregame_match(match_id).await?;
+    let queue = coregame.queue_id().unwrap_or_default().to_string();
     let map_id = coregame.map_i_d.unwrap_or_default();
 
     Ok(MatchContext {
         map: resolve_map_name(api, &map_id).await,
-        queue: coregame.queue_i_d.unwrap_or_else(|| "competitive".into()),
+        queue,
         mode: coregame.mode_i_d.unwrap_or_default(),
         server_id: coregame.game_pod_id.unwrap_or_default(),
+        provisioning_flow: provisioning_flow_or_range(coregame.provisioning_flow, &map_id),
     })
 }
 
@@ -96,7 +125,23 @@ pub fn mode_display_name(mode_id: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::fallback_map_name;
+    use super::{fallback_map_name, is_range_flow, provisioning_flow_or_range};
+
+    #[test]
+    fn detects_the_range_from_flow_or_map_path() {
+        assert!(is_range_flow(&provisioning_flow_or_range(
+            Some("ShootingRange".into()),
+            ""
+        )));
+        assert!(is_range_flow(&provisioning_flow_or_range(
+            None,
+            "/Game/Maps/Poveglia/Range"
+        )));
+        assert!(!is_range_flow(&provisioning_flow_or_range(
+            Some("Matchmaking".into()),
+            "/Game/Maps/Ascent/Ascent"
+        )));
+    }
 
     #[test]
     fn fallback_resolves_recent_map_codenames_case_insensitively() {
