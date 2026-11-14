@@ -94,8 +94,18 @@ pub fn render_overlay(
     match_context: Option<&MatchContext>,
     local_puuid: &str,
     config: &Config,
+    sides_swapped: bool,
 ) {
     let columns = &config.columns;
+    // Riot keeps Red/Blue for the whole match; after a side switch, show each
+    // team in the color of the side it is playing now.
+    let swapped_players;
+    let players = if sides_swapped {
+        swapped_players = teams::with_swapped_sides(players);
+        swapped_players.as_slice()
+    } else {
+        players
+    };
     let visible_players = visible_players(game_state, players);
     let (local_party_id, local_party_number) = local_party_marker(visible_players, local_puuid);
     let layout = overlay_layout(

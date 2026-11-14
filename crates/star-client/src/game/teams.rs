@@ -10,8 +10,9 @@ pub fn is_standard_team_id(team_id: &str) -> bool {
     team_id.eq_ignore_ascii_case("blue") || team_id.eq_ignore_ascii_case("red")
 }
 
-/// Riot side for color purposes: "Red" (attacking) or "Blue" (defending), or
-/// empty when unknown. Side swaps rewrite `team_id`, so it reflects the current half.
+/// Riot team for color purposes: "Red" (attacks first) or "Blue" (defends
+/// first), or empty when unknown. Riot keeps these IDs for the whole match;
+/// `sides_swapped` decides whether they are currently attacking or defending.
 pub fn player_side(player: &PlayerDisplayData) -> &str {
     if is_standard_team_id(&player.team_id) {
         &player.team_id
@@ -20,6 +21,71 @@ pub fn player_side(player: &PlayerDisplayData) -> &str {
     } else {
         ""
     }
+}
+
+/// Rounds in each half before teams switch sides, or `None` for modes without
+/// attack/defense halves (deathmatch, team deathmatch, Escalation, Gauntlet...).
+fn rounds_per_half(ctx: Option<&MatchContext>) -> Option<u32> {
+    let Some(ctx) = ctx else {
+        return Some(12);
+    };
+    if is_gauntlet_context(ctx) {
+        return None;
+    }
+    let queue = ctx.queue.to_ascii_lowercase();
+    let mode = ctx.mode.to_ascii_lowercase();
+    let matches_any = |needles: &[&str]| {
+        needles
+            .iter()
+            .any(|needle| queue.contains(needle) || mode.contains(needle))
+    };
+
+    if matches_any(&["deathmatch", "hurm", "ggteam", "gungame", "snowball"]) {
+        None
+    } else if matches_any(&["spikerush", "quickbomb"]) {
+        Some(3)
+    } else if matches_any(&["swiftplay", "onefa", "oneforall"]) {
+        Some(4)
+    } else {
+        Some(12)
+    }
+}
+
+/// Whether Red/Blue have switched from their starting sides (Red attacks
+/// first) for the round being played after `rounds_played` completed rounds.
+/// Sides switch at halftime, then every round in overtime.
+pub fn sides_swapped(rounds_played: u32, ctx: Option<&MatchContext>) -> bool {
+    let Some(half) = rounds_per_half(ctx) else {
+        return false;
+    };
+    if rounds_played < half {
+        false
+    } else if rounds_played < half * 2 {
+        true
+    } else {
+        (rounds_played - half * 2) % 2 == 1
+    }
+}
+
+/// Copies `players` with Red and Blue exchanged, so colors show the side each
+/// team is currently playing.
+pub fn with_swapped_sides(players: &[PlayerDisplayData]) -> Vec<PlayerDisplayData> {
+    let swap = |id: &mut String| {
+        if id.eq_ignore_ascii_case("red") {
+            *id = "Blue".to_string();
+        } else if id.eq_ignore_ascii_case("blue") {
+            *id = "Red".to_string();
+        }
+    };
+    players
+        .iter()
+        .cloned()
+        .map(|mut player| {
+            swap(&mut player.team_id);
+            swap(&mut player.side_team_id);
+            player
+        })
+        .collect()
 }
 
 pub fn is_gauntlet_context(ctx: &MatchContext) -> bool {
@@ -237,13 +303,6 @@ pub fn team_group_key(
         .get(&player.puuid)
         .cloned()
         .unwrap_or_else(|| format!("solo:{}", player.puuid))
-}
-
-pub fn roster_uses_multi_team_layout(
-    players: &[PlayerDisplayData],
-    ctx: Option<&MatchContext>,
-) -> bool {
-    uses_multi_team_layout(players, ctx)
 }
 
 pub struct TeamSection<'a> {
@@ -643,6 +702,71 @@ mod tests {
         assert!(layout.notice.is_none());
         assert_eq!(layout.sections[0].heading, "YOUR TEAM");
         assert_eq!(layout.sections[1].heading, "ENEMY TEAM");
+    }
+
+    fn context(queue: &str, mode: &str) -> MatchContext {
+        MatchContext {
+            map: MapInfo {
+                name: "Ascent".into(),
+            },
+            queue: queue.into(),
+            mode: mode.into(),
+            server_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn standard_match_swaps_at_halftime_and_every_overtime_round() {
+        let ctx = context("competitive", "/Game/GameModes/Bomb/BombGameMode.BombGameMode_C");
+        assert!(!sides_swapped(0, Some(&ctx)));
+        assert!(!sides_swapped(11, Some(&ctx)));
+        assert!(sides_swapped(12, Some(&ctx)));
+        assert!(sides_swapped(23, Some(&ctx)));
+        assert!(!sides_swapped(24, Some(&ctx)));
+        assert!(sides_swapped(25, Some(&ctx)));
+        assert!(!sides_swapped(26, Some(&ctx)));
+        assert!(sides_swapped(12, None));
+    }
+
+    #[test]
+    fn short_modes_use_their_own_halftime() {
+        let swiftplay = context("swiftplay", "");
+        assert!(!sides_swapped(3, Some(&swiftplay)));
+        assert!(sides_swapped(4, Some(&swiftplay)));
+
+        let spike_rush = context("spikerush", "");
+        assert!(!sides_swapped(2, Some(&spike_rush)));
+        assert!(sides_swapped(3, Some(&spike_rush)));
+
+        let custom_spike_rush = context(
+            "",
+            "/Game/GameModes/QuickBomb/QuickBombGameMode.QuickBombGameMode_C",
+        );
+        assert!(sides_swapped(3, Some(&custom_spike_rush)));
+    }
+
+    #[test]
+    fn modes_without_halves_never_swap() {
+        for queue in ["deathmatch", "hurm", "ggteam"] {
+            assert!(!sides_swapped(15, Some(&context(queue, ""))));
+        }
+    }
+
+    #[test]
+    fn swapped_sides_exchange_red_and_blue_only() {
+        let players = vec![
+            player("a", "Red"),
+            PlayerDisplayData {
+                side_team_id: "Blue".into(),
+                ..player("b", "pregame-team:0")
+            },
+            player("c", "party"),
+        ];
+        let swapped = with_swapped_sides(&players);
+        assert_eq!(player_side(&swapped[0]), "Blue");
+        assert_eq!(player_side(&swapped[1]), "Red");
+        assert_eq!(swapped[1].team_id, "pregame-team:0");
+        assert_eq!(swapped[2].team_id, "party");
     }
 
     #[test]
