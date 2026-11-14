@@ -493,6 +493,7 @@ mod tests {
             queue: "hurmgauntlet".into(),
             mode: "gauntlet".into(),
             server_id: String::new(),
+            provisioning_flow: "Matchmaking".into(),
         }
     }
 
@@ -631,6 +632,7 @@ mod tests {
             queue: "swiftplay".into(),
             mode: "swiftplay".into(),
             server_id: String::new(),
+            provisioning_flow: "Matchmaking".into(),
         };
         let mut players = Vec::new();
         for i in 0..5 {
