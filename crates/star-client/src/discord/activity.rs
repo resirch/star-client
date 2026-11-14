@@ -290,7 +290,7 @@ impl RankInfo {
         if let Some(player) = input.player.filter(|p| p.current_rank > 0) {
             return Self {
                 tier: player.current_rank,
-                name: rank_name(player.current_rank).to_string(),
+                name: roman_rank_name(player.current_rank),
                 rr: Some(player.rr),
                 leaderboard: player.leaderboard_position,
             };
@@ -301,7 +301,7 @@ impl RankInfo {
             .unwrap_or_default();
         Self {
             tier,
-            name: rank_name(tier).to_string(),
+            name: roman_rank_name(tier),
             rr: None,
             leaderboard: presence
                 .map(|p| p.leaderboard_position as i32)
@@ -316,13 +316,31 @@ impl RankInfo {
         let mut label = self.name.clone();
         if show_rr {
             if let Some(rr) = self.rr {
-                label.push_str(&format!(" {rr} RR"));
+                label.push_str(&format!(" - {rr} RR"));
             }
         }
         if self.leaderboard > 0 {
             label.push_str(&format!(" #{}", self.leaderboard));
         }
         Some(label)
+    }
+}
+
+/// "Diamond 2" becomes "Diamond II"; names without a division are unchanged.
+fn roman_rank_name(tier: i32) -> String {
+    let name = rank_name(tier);
+    let roman = |division| match division {
+        "1" => Some("I"),
+        "2" => Some("II"),
+        "3" => Some("III"),
+        _ => None,
+    };
+    match name.rsplit_once(' ') {
+        Some((base, division)) => match roman(division) {
+            Some(numeral) => format!("{base} {numeral}"),
+            None => name.to_string(),
+        },
+        None => name.to_string(),
     }
 }
 
@@ -490,7 +508,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(view.details, "In Queue");
-        assert_eq!(view.state, "Competitive | Diamond 1 | Level 379");
+        assert_eq!(view.state, "Competitive | Diamond I | Level 379");
         assert_eq!(view.large_image, VALORANT_LOGO_URL);
         assert_eq!(view.large_text, "VALORANT | Star Client");
         assert_eq!(view.party, Some(("party-1".into(), 2, 5)));
@@ -517,7 +535,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(view.details, "Competitive | Ascent");
-        assert_eq!(view.state, "7 - 5 | Jett | Diamond 2 42 RR");
+        assert_eq!(view.state, "7 - 5 | Jett | Diamond II - 42 RR");
         assert_eq!(view.large_image, "https://example.com/ascent.png");
         assert_eq!(view.large_text, "Ascent | Star Client");
         assert_eq!(view.small_text.as_deref(), Some("Jett"));
@@ -563,6 +581,14 @@ mod tests {
         assert_eq!(view.start_timestamp, None);
         assert_eq!(view.button, None);
         assert_eq!(view.details_url, None);
+    }
+
+    #[test]
+    fn rank_divisions_use_roman_numerals() {
+        assert_eq!(roman_rank_name(3), "Iron I");
+        assert_eq!(roman_rank_name(20), "Diamond III");
+        assert_eq!(roman_rank_name(27), "Radiant");
+        assert_eq!(roman_rank_name(0), "Unranked");
     }
 
     #[test]
