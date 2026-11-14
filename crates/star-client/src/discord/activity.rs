@@ -9,6 +9,14 @@ use crate::riot::types::{
 };
 use serde_json::Value;
 
+/// The game name Discord shows ("Playing VALORANT"), overriding the
+/// Discord application's own name.
+pub const GAME_NAME: &str = "VALORANT";
+
+/// Credited in the large image's hover text, which links here.
+pub const STAR_CLIENT_NAME: &str = "Star Client";
+pub const STAR_CLIENT_URL: &str = "https://github.com/resirch/star-client";
+
 /// Shown in the lobby, and in a match when the map image is off or unknown.
 pub const VALORANT_LOGO_URL: &str =
     "https://upload.wikimedia.org/wikipedia/commons/f/fc/Valorant_logo_-_pink_color_version_%28cropped%29.png";
@@ -84,6 +92,9 @@ fn parse_queue_entry_time(raw: &str) -> Option<i64> {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ActivityView {
     pub details: String,
+    /// Makes the details line a link. Unlike buttons, which Discord hides
+    /// from the player whose presence it is, this is visible to them too.
+    pub details_url: Option<String>,
     pub state: String,
     pub large_image: String,
     pub large_text: String,
@@ -153,7 +164,7 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
 
     let mut view = ActivityView {
         large_image: VALORANT_LOGO_URL.to_string(),
-        large_text: "VALORANT".to_string(),
+        large_text: GAME_NAME.to_string(),
         start_timestamp: config.show_elapsed_time.then_some(input.state_started_at),
         ..Default::default()
     };
@@ -243,13 +254,12 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
             .filter(|p| !p.game_name.is_empty() && !p.tag_line.is_empty() && !p.is_incognito)
         {
             let riot_id = format!("{}#{}", player.game_name, player.tag_line);
-            view.button = Some((
-                "Tracker.gg Profile".to_string(),
-                format!(
-                    "https://tracker.gg/valorant/profile/riot/{}/overview",
-                    percent_encode(&riot_id)
-                ),
-            ));
+            let url = format!(
+                "https://tracker.gg/valorant/profile/riot/{}/overview",
+                percent_encode(&riot_id)
+            );
+            view.details_url = Some(url.clone());
+            view.button = Some(("Tracker.gg Profile".to_string(), url));
         }
     }
 
@@ -258,6 +268,8 @@ pub fn build_activity(input: &ActivityInput) -> Option<ActivityView> {
     if view.state.chars().count() < 2 {
         view.state = "VALORANT".to_string();
     }
+    view.large_text = format!("{} | {}", view.large_text, STAR_CLIENT_NAME);
+
     view.details = truncate(&view.details, 128);
     view.state = truncate(&view.state, 128);
 
@@ -480,6 +492,7 @@ mod tests {
         assert_eq!(view.details, "In Queue");
         assert_eq!(view.state, "Competitive | Diamond 1 | Level 379");
         assert_eq!(view.large_image, VALORANT_LOGO_URL);
+        assert_eq!(view.large_text, "VALORANT | Star Client");
         assert_eq!(view.party, Some(("party-1".into(), 2, 5)));
         assert_eq!(view.start_timestamp, Some(1_794_679_353));
         assert!(view.small_image.unwrap().ends_with("/18/largeicon.png"));
@@ -506,13 +519,12 @@ mod tests {
         assert_eq!(view.details, "Competitive | Ascent");
         assert_eq!(view.state, "7 - 5 | Jett | Diamond 2 42 RR");
         assert_eq!(view.large_image, "https://example.com/ascent.png");
-        assert_eq!(view.large_text, "Ascent");
+        assert_eq!(view.large_text, "Ascent | Star Client");
         assert_eq!(view.small_text.as_deref(), Some("Jett"));
         assert_eq!(view.start_timestamp, Some(100));
-        assert_eq!(
-            view.button.unwrap().1,
-            "https://tracker.gg/valorant/profile/riot/Star%20Player%23NA1/overview"
-        );
+        let profile = "https://tracker.gg/valorant/profile/riot/Star%20Player%23NA1/overview";
+        assert_eq!(view.button.unwrap().1, profile);
+        assert_eq!(view.details_url.as_deref(), Some(profile));
     }
 
     #[test]
@@ -550,6 +562,7 @@ mod tests {
         assert_eq!(view.party, None);
         assert_eq!(view.start_timestamp, None);
         assert_eq!(view.button, None);
+        assert_eq!(view.details_url, None);
     }
 
     #[test]
