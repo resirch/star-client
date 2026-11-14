@@ -690,5 +690,6 @@ fn decode_private_presence(encoded: Option<&str>) -> Option<PrivatePresence> {
     let encoded = encoded?;
     let decoded =
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).ok()?;
-    serde_json::from_slice(&decoded).ok()
+    let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    Some(PrivatePresence::from_json(&json))
 }

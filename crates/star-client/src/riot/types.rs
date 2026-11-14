@@ -53,27 +53,59 @@ pub struct Presence {
     pub private: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+/// Decoded `private` field of a Valorant presence.
+///
+/// Riot moved most fields from the top level into nested objects
+/// (`matchPresenceData`, `partyPresenceData`, `playerPresenceData`), so this
+/// is built with [`PrivatePresence::from_json`], which reads the nested copy
+/// first and falls back to the top-level (older) key.
+#[derive(Debug, Clone, Default)]
 pub struct PrivatePresence {
-    #[serde(default)]
     pub is_valid: bool,
-    #[serde(default)]
     pub session_loop_state: String,
-    #[serde(default)]
     pub party_id: String,
-    #[serde(default)]
     pub matchmap: String,
-    #[serde(default)]
     pub match_id: String,
-    #[serde(default, alias = "provisioningFlow")]
     pub provisioning_flow: String,
-    #[serde(default)]
     pub queue_id: String,
-    #[serde(default)]
     pub party_size: i32,
-    #[serde(default)]
     pub party_version: i64,
+}
+
+impl PrivatePresence {
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        let matched = &value["matchPresenceData"];
+        let party = &value["partyPresenceData"];
+        Self {
+            is_valid: value["isValid"].as_bool().unwrap_or_default(),
+            session_loop_state: presence_text(value, matched, "sessionLoopState"),
+            party_id: presence_text(value, party, "partyId"),
+            matchmap: presence_text(value, matched, "matchMap"),
+            match_id: presence_text(value, matched, "matchId"),
+            provisioning_flow: presence_text(value, matched, "provisioningFlow"),
+            queue_id: presence_text(value, matched, "queueId"),
+            party_size: presence_number(value, party, "partySize") as i32,
+            party_version: presence_number(value, party, "partyVersion"),
+        }
+    }
+}
+
+/// Reads `key` from the nested presence object, falling back to the top level.
+pub fn presence_text(root: &serde_json::Value, nested: &serde_json::Value, key: &str) -> String {
+    nested[key]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| root[key].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Reads `key` from the nested presence object, falling back to the top level.
+pub fn presence_number(root: &serde_json::Value, nested: &serde_json::Value, key: &str) -> i64 {
+    nested[key]
+        .as_i64()
+        .or_else(|| root[key].as_i64())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
