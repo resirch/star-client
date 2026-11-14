@@ -319,10 +319,32 @@ pub struct CoregameMatchResponse {
     pub map_i_d: Option<String>,
     pub mode_i_d: Option<String>,
     pub queue_i_d: Option<String>,
+    /// Coregame reports the queue here rather than in a top-level `QueueID`.
+    pub matchmaking_data: Option<CoregameMatchmakingData>,
     pub provisioning_flow: Option<String>,
     #[serde(rename = "GamePodID")]
     pub game_pod_id: Option<String>,
     pub players: Vec<CoregamePlayer>,
+}
+
+impl CoregameMatchResponse {
+    pub fn queue_id(&self) -> Option<&str> {
+        self.queue_i_d
+            .as_deref()
+            .filter(|queue| !queue.is_empty())
+            .or_else(|| {
+                self.matchmaking_data
+                    .as_ref()
+                    .and_then(|data| data.queue_i_d.as_deref())
+            })
+            .filter(|queue| !queue.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CoregameMatchmakingData {
+    pub queue_i_d: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -633,7 +655,18 @@ pub fn skin_tier_color(content_tier_uuid: Option<&str>) -> egui::Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{skin_tier_color, LoadoutsResponse};
+    use super::{skin_tier_color, CoregameMatchResponse, LoadoutsResponse};
+
+    #[test]
+    fn coregame_queue_is_read_from_matchmaking_data() {
+        let response: CoregameMatchResponse = serde_json::from_value(serde_json::json!({
+            "MatchID": "m",
+            "MatchmakingData": { "QueueID": "swiftplay", "IsRanked": false },
+            "Players": []
+        }))
+        .unwrap();
+        assert_eq!(response.queue_id(), Some("swiftplay"));
+    }
 
     #[test]
     fn loadouts_deserialize_nested_game_shape() {
