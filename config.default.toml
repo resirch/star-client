@@ -31,6 +31,20 @@ truncate_names = true
 truncate_ranks = true
 roman_numerals = true
 
+[discord]
+show_map_image = true
+show_mode = true
+show_map_name = true
+show_score = true
+show_rank = true
+show_rr = true
+show_agent = true
+show_party_size = true
+show_queue_status = true
+show_account_level = true
+show_elapsed_time = true
+show_profile_button = true
+
 [star]
 enabled = true
 backend_url = "https://star-client.fly.dev"

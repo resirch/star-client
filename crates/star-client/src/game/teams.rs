@@ -547,10 +547,12 @@ mod tests {
         MatchContext {
             map: MapInfo {
                 name: "Gauntlet".into(),
+                splash: None,
             },
             queue: "hurmgauntlet".into(),
             mode: "gauntlet".into(),
             server_id: String::new(),
+            provisioning_flow: "Matchmaking".into(),
         }
     }
 
@@ -684,10 +686,12 @@ mod tests {
         let ctx = MatchContext {
             map: MapInfo {
                 name: "Ascent".into(),
+                splash: None,
             },
             queue: "swiftplay".into(),
             mode: "swiftplay".into(),
             server_id: String::new(),
+            provisioning_flow: "Matchmaking".into(),
         };
         let mut players = Vec::new();
         for i in 0..5 {
@@ -708,10 +712,12 @@ mod tests {
         MatchContext {
             map: MapInfo {
                 name: "Ascent".into(),
+                splash: None,
             },
             queue: queue.into(),
             mode: mode.into(),
             server_id: String::new(),
+            provisioning_flow: String::new(),
         }
     }
 
