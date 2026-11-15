@@ -10,7 +10,6 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 use std::cell::RefCell;
 
-const PARTY_W: f32 = 8.0;
 const STAR_W: f32 = 18.0;
 const ROW_H: f32 = 22.0;
 const HDR_H: f32 = 20.0;
@@ -42,7 +41,6 @@ thread_local! {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TableColumn {
-    Party,
     Star,
     Agent,
     Name,
@@ -61,7 +59,6 @@ enum TableColumn {
 
 #[derive(Clone, Copy, Debug)]
 struct ColumnWidths {
-    party: f32,
     star: f32,
     agent: f32,
     name: f32,
@@ -409,7 +406,6 @@ fn visible_table_columns(
     show_skin: bool,
 ) -> Vec<TableColumn> {
     let mut cols = vec![
-        TableColumn::Party,
         TableColumn::Star,
         TableColumn::Agent,
         TableColumn::Name,
@@ -458,7 +454,6 @@ fn column_gutter_sides(column_index: usize, column_count: usize) -> (f32, f32) {
 
 fn table_column_content_width(column: TableColumn, widths: ColumnWidths) -> f32 {
     match column {
-        TableColumn::Party => widths.party,
         TableColumn::Star => widths.star,
         TableColumn::Agent => widths.agent,
         TableColumn::Name => widths.name,
@@ -538,7 +533,6 @@ fn measure_column_widths(
     let weapon_label = selected_weapon_label(&config.overlay.weapon);
 
     ColumnWidths {
-        party: PARTY_W,
         star: STAR_W,
         agent: text_column_width(
             ctx,
@@ -878,7 +872,7 @@ fn header_row(
 
 fn header_label_for(column: TableColumn, skin_label: &str) -> (&str, HdrAlign) {
     match column {
-        TableColumn::Party | TableColumn::Star => ("", HdrAlign::Center),
+        TableColumn::Star => ("", HdrAlign::Center),
         TableColumn::Agent => ("AGENT", HdrAlign::Left),
         TableColumn::Name => ("NAME", HdrAlign::Center),
         TableColumn::Rank => ("RANK", HdrAlign::Center),
@@ -1057,7 +1051,6 @@ fn paint_player_column(
     column_count: usize,
 ) {
     match column {
-        TableColumn::Party => {}
         TableColumn::Star => {
             if p.is_star_user {
                 paint_star_icon(ui, rect, PLAYER_STAR_SIZE);

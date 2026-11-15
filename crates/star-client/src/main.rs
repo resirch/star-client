@@ -176,6 +176,11 @@ async fn run_background_loop(
         tracing::warn!("Auto update check failed: {}", error);
     }
 
+    tokio::spawn(discord::rpc::run(
+        Arc::clone(&app_state),
+        Arc::clone(&quit_flag),
+    ));
+
     // Only log the lockfile port when it changes, so auth retries collapse into one line.
     let mut logged_port: Option<u16> = None;
 

@@ -13,6 +13,8 @@ pub struct Config {
     pub features: FeatureConfig,
     #[serde(default)]
     pub star: StarConfig,
+    #[serde(default)]
+    pub discord: DiscordConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +81,36 @@ pub struct FeatureConfig {
     pub truncate_ranks: bool,
     #[serde(default = "bool_true")]
     pub roman_numerals: bool,
+}
+
+/// What the Discord Rich Presence shows. The master switch is
+/// `behavior.discord_rpc`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscordConfig {
+    #[serde(default = "bool_true")]
+    pub show_map_image: bool,
+    #[serde(default = "bool_true")]
+    pub show_mode: bool,
+    #[serde(default = "bool_true")]
+    pub show_map_name: bool,
+    #[serde(default = "bool_true")]
+    pub show_score: bool,
+    #[serde(default = "bool_true")]
+    pub show_rank: bool,
+    #[serde(default = "bool_true")]
+    pub show_rr: bool,
+    #[serde(default = "bool_true")]
+    pub show_agent: bool,
+    #[serde(default = "bool_true")]
+    pub show_party_size: bool,
+    #[serde(default = "bool_true")]
+    pub show_queue_status: bool,
+    #[serde(default = "bool_true")]
+    pub show_account_level: bool,
+    #[serde(default = "bool_true")]
+    pub show_elapsed_time: bool,
+    #[serde(default = "bool_true")]
+    pub show_profile_button: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +196,25 @@ impl Default for FeatureConfig {
             truncate_names: true,
             truncate_ranks: true,
             roman_numerals: true,
+        }
+    }
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            show_map_image: true,
+            show_mode: true,
+            show_map_name: true,
+            show_score: true,
+            show_rank: true,
+            show_rr: true,
+            show_agent: true,
+            show_party_size: true,
+            show_queue_status: true,
+            show_account_level: true,
+            show_elapsed_time: true,
+            show_profile_button: true,
         }
     }
 }
