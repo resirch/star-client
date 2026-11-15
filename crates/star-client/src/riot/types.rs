@@ -53,32 +53,26 @@ pub struct Presence {
     pub private: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+/// Decoded `private` field of a Valorant presence.
+///
+/// Riot moved most fields from the top level into nested objects
+/// (`matchPresenceData`, `partyPresenceData`, `playerPresenceData`), so this
+/// is built with [`PrivatePresence::from_json`], which reads the nested copy
+/// first and falls back to the top-level (older) key.
+#[derive(Debug, Clone, Default)]
 pub struct PrivatePresence {
-    #[serde(default)]
     pub is_valid: bool,
-    #[serde(default)]
     pub session_loop_state: String,
-    #[serde(default)]
     pub party_id: String,
-    #[serde(default)]
     pub matchmap: String,
-    #[serde(default)]
     pub match_id: String,
-    #[serde(default, alias = "provisioningFlow")]
     pub provisioning_flow: String,
-    #[serde(default)]
     pub queue_id: String,
-    #[serde(default)]
     pub party_size: i32,
-    #[serde(default)]
     pub party_version: i64,
     /// Rounds the party owner's team has won in the current match.
-    #[serde(default, deserialize_with = "lenient_round_score")]
     pub party_owner_match_score_ally_team: Option<u32>,
     /// Rounds the party owner's opponents have won in the current match.
-    #[serde(default, deserialize_with = "lenient_round_score")]
     pub party_owner_match_score_enemy_team: Option<u32>,
 }
 
@@ -89,18 +83,69 @@ impl PrivatePresence {
     }
 }
 
-/// Reads a score without failing the whole presence on an odd value.
-fn lenient_round_score<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(value.and_then(|value| match value {
+/// Reads a round score from the nested presence objects, falling back to the
+/// top level, without failing the whole presence on an odd value.
+fn presence_round_score(root: &serde_json::Value, nested: &[&serde_json::Value], key: &str) -> Option<u32> {
+    nested
+        .iter()
+        .copied()
+        .chain(std::iter::once(root))
+        .find_map(|object| lenient_round_score(&object[key]))
+}
+
+fn lenient_round_score(value: &serde_json::Value) -> Option<u32> {
+    match value {
         serde_json::Value::Number(number) => number.as_u64(),
         serde_json::Value::String(text) => text.trim().parse().ok(),
         _ => None,
-    })
-    .and_then(|score| u32::try_from(score).ok()))
+    }
+    .and_then(|score| u32::try_from(score).ok())
+}
+
+impl PrivatePresence {
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        let matched = &value["matchPresenceData"];
+        let party = &value["partyPresenceData"];
+        Self {
+            is_valid: value["isValid"].as_bool().unwrap_or_default(),
+            session_loop_state: presence_text(value, matched, "sessionLoopState"),
+            party_id: presence_text(value, party, "partyId"),
+            matchmap: presence_text(value, matched, "matchMap"),
+            match_id: presence_text(value, matched, "matchId"),
+            provisioning_flow: presence_text(value, matched, "provisioningFlow"),
+            queue_id: presence_text(value, matched, "queueId"),
+            party_size: presence_number(value, party, "partySize") as i32,
+            party_version: presence_number(value, party, "partyVersion"),
+            party_owner_match_score_ally_team: presence_round_score(
+                value,
+                &[party, matched],
+                "partyOwnerMatchScoreAllyTeam",
+            ),
+            party_owner_match_score_enemy_team: presence_round_score(
+                value,
+                &[party, matched],
+                "partyOwnerMatchScoreEnemyTeam",
+            ),
+        }
+    }
+}
+
+/// Reads `key` from the nested presence object, falling back to the top level.
+pub fn presence_text(root: &serde_json::Value, nested: &serde_json::Value, key: &str) -> String {
+    nested[key]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| root[key].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Reads `key` from the nested presence object, falling back to the top level.
+pub fn presence_number(root: &serde_json::Value, nested: &serde_json::Value, key: &str) -> i64 {
+    nested[key]
+        .as_i64()
+        .or_else(|| root[key].as_i64())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -314,10 +359,32 @@ pub struct CoregameMatchResponse {
     pub map_i_d: Option<String>,
     pub mode_i_d: Option<String>,
     pub queue_i_d: Option<String>,
+    /// Coregame reports the queue here rather than in a top-level `QueueID`.
+    pub matchmaking_data: Option<CoregameMatchmakingData>,
     pub provisioning_flow: Option<String>,
     #[serde(rename = "GamePodID")]
     pub game_pod_id: Option<String>,
     pub players: Vec<CoregamePlayer>,
+}
+
+impl CoregameMatchResponse {
+    pub fn queue_id(&self) -> Option<&str> {
+        self.queue_i_d
+            .as_deref()
+            .filter(|queue| !queue.is_empty())
+            .or_else(|| {
+                self.matchmaking_data
+                    .as_ref()
+                    .and_then(|data| data.queue_i_d.as_deref())
+            })
+            .filter(|queue| !queue.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CoregameMatchmakingData {
+    pub queue_i_d: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -457,6 +524,8 @@ pub struct MapData {
     pub display_name: String,
     pub map_url: Option<String>,
     pub display_icon: Option<String>,
+    /// Loading-screen artwork.
+    pub splash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -626,7 +695,18 @@ pub fn skin_tier_color(content_tier_uuid: Option<&str>) -> egui::Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{skin_tier_color, LoadoutsResponse};
+    use super::{skin_tier_color, CoregameMatchResponse, LoadoutsResponse};
+
+    #[test]
+    fn coregame_queue_is_read_from_matchmaking_data() {
+        let response: CoregameMatchResponse = serde_json::from_value(serde_json::json!({
+            "MatchID": "m",
+            "MatchmakingData": { "QueueID": "swiftplay", "IsRanked": false },
+            "Players": []
+        }))
+        .unwrap();
+        assert_eq!(response.queue_id(), Some("swiftplay"));
+    }
 
     #[test]
     fn loadouts_deserialize_nested_game_shape() {
