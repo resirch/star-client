@@ -555,10 +555,12 @@ fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::Gl
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-        let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-        let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-        glfw_backend.window.set_pos(0, 0);
-        glfw_backend.set_window_size([screen_w as f32, screen_h as f32]);
+        // Cover the primary monitor at its native screen size.
+        // `set_window_size` expects egui logical points and multiplies by DPI
+        // scale, so passing GetSystemMetrics pixels made 4K/HiDPI overlays size
+        // and center as if the display were still 1080p. Set GLFW virtual units
+        // directly from the monitor video mode instead.
+        let (screen_w, screen_h) = cover_primary_monitor(glfw_backend);
 
         let hwnd = glfw_backend.window.get_win32_window();
         if !hwnd.is_null() {
@@ -574,13 +576,41 @@ fn init_window(glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::Gl
         }
 
         tracing::info!(
-            "Window initialized: {}x{}, hidden from taskbar",
+            "Window initialized: {}x{} (scale {}), hidden from taskbar",
             screen_w,
-            screen_h
+            screen_h,
+            glfw_backend.scale
         );
     }
 
     glfw_backend.set_passthrough(true);
+}
+
+/// Size and position the overlay window to exactly cover the primary monitor.
+///
+/// Uses GLFW screen coordinates (virtual units), not egui logical points.
+#[cfg(target_os = "windows")]
+fn cover_primary_monitor(
+    glfw_backend: &mut egui_overlay::egui_window_glfw_passthrough::GlfwBackend,
+) -> (i32, i32) {
+    let (x, y, width, height) = glfw_backend.glfw.with_primary_monitor(|_, monitor| {
+        let Some(monitor) = monitor else {
+            return (0, 0, 1920, 1080);
+        };
+        let (x, y) = monitor.get_pos();
+        if let Some(mode) = monitor.get_video_mode() {
+            (x, y, mode.width as i32, mode.height as i32)
+        } else {
+            let (work_x, work_y, work_w, work_h) = monitor.get_workarea();
+            (work_x, work_y, work_w, work_h)
+        }
+    });
+
+    glfw_backend.window.set_pos(x, y);
+    glfw_backend.window.set_size(width, height);
+    // Refresh cached logical size so egui's first frame matches the new framebuffer.
+    let _ = glfw_backend.get_window_size();
+    (width, height)
 }
 
 fn activate_settings_window(
